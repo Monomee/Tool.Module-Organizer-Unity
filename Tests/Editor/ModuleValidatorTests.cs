@@ -558,13 +558,30 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             var dll = new TypeRecord { fullName = "Json.Node", ns = "Json", assemblyName = "Vendor.Json", kind = AssemblyKind.Precompiled, autoReferencedDll = true };
             scan.types["Json.Node"] = pkg;
             scan.publicDeclarers["Json.Node"] = new List<TypeRecord> { pkg, dll };
-            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.DuplicateTypeName), "nothing moves");
+            dll.autoReferencedDll = false;
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.DuplicateTypeName), "Assembly-CSharp sees only Pkg.Json");
+            dll.autoReferencedDll = true;
             Assign("Combat", scan, "a"); // references Pkg.Json by GUID and sees every auto-referenced DLL
             var i = Single(Validate(scan), IssueCode.DuplicateTypeName);
             Assert.AreEqual(S + "A.cs", i.path);
             StringAssert.Contains("Pkg.Json and Vendor.Json", i.message);
             dll.autoReferencedDll = false;
             Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.DuplicateTypeName), "the DLL is not seen");
+        }
+
+        [Test]
+        public void StayPutFile_SeesBothCopiesOnceItsOwnMovesOut_ButNotWhileItsAssemblyDeclaresTheName()
+        {
+            var scan = Scan(F(S + "Node.cs", "n", AssemblyKind.Runtime, "Json.Node"), F(S + "User.cs", "u", AssemblyKind.Runtime, "Game.User", "Json.Node"));
+            var own = scan.types["Json.Node"];
+            own.assemblyName = "Assembly-CSharp";
+            var pkg = new TypeRecord { fullName = "Json.Node", ns = "Json", assemblyName = "Pkg.Json", kind = AssemblyKind.AsmDef, asmdefGuid = "0123456789abcdef0123456789abcdef" };
+            scan.publicDeclarers["Json.Node"] = new List<TypeRecord> { own, pkg };
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.DuplicateTypeName), "Assembly-CSharp's own Json.Node wins (CS0436)");
+            Assign("Combat", scan, "n"); // Node leaves Assembly-CSharp for the auto-referenced Game.Combat
+            var i = Single(Validate(scan), IssueCode.DuplicateTypeName);
+            Assert.AreEqual(S + "User.cs", i.path);
+            StringAssert.Contains("Game.Combat and Pkg.Json", i.message);
         }
 
         [Test]

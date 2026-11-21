@@ -670,6 +670,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (e.setNamespace != null) parts.Add("namespace → " + (e.setNamespace.Length == 0 ? "(global)" : e.setNamespace));
                 parts.AddRange(e.addUsings.Select(u => "+using " + u));
                 parts.AddRange(e.removeUsings.Select(u => "-using " + u));
+                parts.AddRange(e.removeMarkedUsings.Select(u => "-using " + u + " (added by Apply)"));
                 parts.AddRange(e.aliases.Select(x => $"+using {x.alias} = {x.target}"));
                 parts.AddRange(e.movedFrom.Select(x => $"[MovedFrom {x.oldNs}] on {x.type}"));
                 return Line($"{PathOf(e.guid)}: {string.Join(", ", parts)}");
@@ -722,7 +723,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
             if (ApplyResultWatcher.Pending)
                 resultView.Add(Line($"Waiting for the compile result… (domain reload {ApplyResultWatcher.PendingReloads} of at most " +
-                                    $"{ApplyResultWatcher.MaxReloads}; after that the check gives up with a warning)."));
+                                    $"{ApplyResultWatcher.MaxReloads}; on reload {ApplyResultWatcher.MaxReloads} the check gives up with a warning)."));
             if (result != null)
             {
                 // Editor first: playerCompileOk is false whenever the Editor compile failed.

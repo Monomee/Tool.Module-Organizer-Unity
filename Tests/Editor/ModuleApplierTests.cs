@@ -79,6 +79,50 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void CaseRename_NeverRenamesTheRootOrAboveIt_TheTargetFollowsTheDiskCaseThere()
+        {
+            cfg.scopeFolders.Add(T + "/Game/Modules");
+            AssetDatabase.CreateFolder(T, "Game");
+            AssetDatabase.CreateFolder(T + "/Game", "Modules");
+            AssetDatabase.CreateFolder(T + "/Game/Modules", "combat");
+            var a = Add(T + "/Game/Modules/combat/A.txt");
+            var errors = ModuleApplier.Execute(new ApplyPlan
+            {
+                moves = { new MoveOp { guid = a, from = T + "/Game/Modules/combat/A.txt", to = T + "/game/modules/Combat/A.txt" } },
+            }, cfg, out var touched, refresh: false);
+            CollectionAssert.IsEmpty(errors);
+            Assert.IsTrue(touched);
+            CollectionAssert.AreEqual(new[] { "Game" }, Directory.GetDirectories(T).Select(Path.GetFileName));
+            CollectionAssert.AreEqual(new[] { "Modules" }, Directory.GetDirectories(T + "/Game").Select(Path.GetFileName));
+            CollectionAssert.AreEqual(new[] { "Combat" }, Directory.GetDirectories(T + "/Game/Modules").Select(Path.GetFileName));
+            Assert.AreEqual(T + "/Game/Modules/Combat/A.txt", AssetDatabase.GUIDToAssetPath(a));
+        }
+
+        [Test]
+        public void FailureAfterACaseRename_StillOwesTheKeys_AFailureBeforeAnyChangeDoesNot()
+        {
+            UnityEngine.TestTools.LogAssert.ignoreFailingMessages = true; // CreateFolder may log its failure
+            var b = Add(T + "/b.txt");
+            var plan = new ApplyPlan
+            {
+                createFolders = { T + "/missing/sub" }, // the parent does not exist: CreateFolder fails
+                moves = { new MoveOp { guid = b, from = T + "/b.txt", to = T + "/B.txt" } },
+                reserializeTypeKeys = { "N|Asm|C" },
+            };
+            var errors = ModuleApplier.Execute(plan, cfg, out var touched, refresh: false);
+            StringAssert.Contains("Could not create folder", string.Join("\n", errors));
+            Assert.IsTrue(touched);
+            CollectionAssert.AreEqual(new[] { "N|Asm|C" }, cfg.owedReserializeKeys);
+
+            cfg.owedReserializeKeys.Clear();
+            plan.moves.Clear();
+            errors = ModuleApplier.Execute(plan, cfg, out touched, refresh: false);
+            CollectionAssert.IsNotEmpty(errors);
+            Assert.IsFalse(touched);
+            CollectionAssert.IsEmpty(cfg.owedReserializeKeys);
+        }
+
+        [Test]
         public void ReserializeKeys_AreOwedOnceDiskIsTouched_UntilCleared()
         {
             var guid = Add(T + "/a.txt");

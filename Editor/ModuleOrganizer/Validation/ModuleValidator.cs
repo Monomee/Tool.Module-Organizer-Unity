@@ -321,20 +321,24 @@ namespace Monome.UtilityPack.ModuleOrganizer
             // A file whose assembly changes must not see two assemblies declaring a public full name it uses (CS0433).
             void CheckTypeCollisions()
             {
+                // Every file whose references Apply decides (module files, Assembly-CSharp(-Editor)): a stay-put file also
+                // collides when a declarer moves out of its assembly or its asmdef gains a reference. Its own assembly
+                // still declaring the name wins (CS0436, a warning).
                 var vis = new Visibility(cfg, scan, fates, r);
-                foreach (var f in files.Where(f => IsAssignable(f, cfg)))
+                foreach (var f in files.Where(f => fates.ModuleOf(f) != null || f.kind is AssemblyKind.Runtime or AssemblyKind.Editor))
                 {
-                    var target = fates.TargetAssembly(f);
-                    if (target == null || target == fates.CurrentAssembly(f)) continue;
+                    var own = fates.TargetAssembly(f) ?? fates.CurrentAssembly(f);
                     var sees = vis.Sees(f);
                     foreach (var tn in f.referencedTypes.Select(Outer).Distinct().OrderBy(n => n, StringComparer.Ordinal))
                     {
                         if (!scan.publicDeclarers.TryGetValue(tn, out var decls)) continue;
-                        var seen = decls.Where(d => sees(vis.Place(d))).Select(d => d.assemblyName).Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList();
+                        var placed = decls.Select(vis.Place).ToList();
+                        if (placed.Any(d => d.asm == own)) continue;
+                        var seen = placed.Where(sees).Select(d => d.asm).Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList();
                         if (seen.Count > 1)
                             Add(Severity.Error, IssueCode.DuplicateTypeName, f.path,
-                                $"{f.path} uses {tn}, which {string.Join(" and ", seen)} both declare; after Apply its assembly {target} sees both (CS0433). " +
-                                "Rename one, or keep the file where it is.");
+                                $"{f.path} uses {tn}, which {string.Join(" and ", seen)} both declare; after Apply its assembly {own} sees both (CS0433). " +
+                                "Rename one, or keep the declaring files where they are.");
                     }
                 }
             }

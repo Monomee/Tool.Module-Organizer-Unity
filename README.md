@@ -94,7 +94,10 @@ lại `Assembly-CSharp(-Editor)`, miễn là thư mục cũ không nằm trong t
   không chặn khi assembly khai báo (không bị Apply chuyển) đã có `[assembly: InternalsVisibleTo("<tên assembly sau Apply>")]`,
   ví dụ `"Game.Combat"`; chỉ cấp cho `Assembly-CSharp` thì chưa đủ.
 - **Kiểu `public` cùng tên đầy đủ trong hai assembly** (ví dụ một package và một DLL): nếu sau Apply assembly của file
-  thấy cả hai, Apply bị chặn (`DuplicateTypeName`, tránh lỗi CS0433).
+  thấy cả hai, Apply bị chặn (`DuplicateTypeName`, tránh lỗi CS0433). Điều này áp dụng cả với file không bị chuyển
+  (ví dụ khi bản trong assembly của nó chuyển sang module).
+- **Đường dẫn không phân biệt hoa thường** (như Windows và macOS). Project dựa vào hai thư mục chỉ khác hoa thường (ví dụ
+  `Combat` và `combat`, có thể có trên Linux) không được hỗ trợ.
 - **Apply lỗi giữa chừng khi đang chuyển file** có thể để lại một file đã chuyển mà chưa có `[MovedFrom]`. Vì vậy hãy
   commit trước khi Apply, và khi có lỗi thì quay lại bằng git (`git checkout` / `git clean` trong thư mục bị ảnh hưởng).
 

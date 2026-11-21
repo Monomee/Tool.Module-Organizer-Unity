@@ -686,6 +686,7 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Add(S + "Weapon.cs", "w", "Weapon");
             Add(S + "Shield.cs", "sh", "Shield");
             Add(S + "Player.cs", "pl", "Player", "Weapon");
+            disk.sourceByGuid["pl"] = "class Player\n{\n    Weapon w;\n}\n";
             Assign("Combat", "w", "sh");
             Assign("Alpha", "pl");
             Execute(Plan());
@@ -696,9 +697,57 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Unassign("w");
             Unassign("pl");
             var p = Plan();
-            CollectionAssert.AreEqual(new[] { "Game.Combat" }, p.edits.Single(x => x.guid == "pl").removeUsings, "Game.Combat stays (Shield)");
+            var op = p.edits.Single(x => x.guid == "pl");
+            Assert.IsEmpty(op.removeUsings, "Game.Combat stays (Shield)");
+            CollectionAssert.AreEqual(new[] { "Game.Combat" }, op.removeMarkedUsings);
             Execute(p);
-            StringAssert.DoesNotContain("using", Source(S + "Player.cs"));
+            Assert.AreEqual("class Player\n{\n    Weapon w;\n}\n", Source(S + "Player.cs"));
+        }
+
+        [Test]
+        public void MarkedUsing_KeptForPlayerOnlyCode_UserDuplicateKept_RedundantOneDropped()
+        {
+            Add(S + "Weapon.cs", "w", "Weapon");
+            Add(S + "Shield.cs", "sh", "Shield");
+            Add(S + "Player.cs", "pl", "Player", "Weapon");
+            disk.sourceByGuid["pl"] = "class Player\n{\n    Weapon w;\n#if !UNITY_EDITOR\n    Shield s;\n#endif\n}\n";
+            Add(S + "Dup.cs", "d", "Dup", "Weapon");
+            disk.sourceByGuid["d"] = "class Dup\n{\n    Weapon w;\n}\n";
+            Add(S + "Mover.cs", "mv", "Mover", "Shield");
+            Assign("Combat", "w", "sh");
+            Assign("Alpha", "pl", "d", "mv");
+            Execute(Plan());
+            disk.sourceByGuid["d"] = "using Game.Combat;\n" + Source(S + "Alpha/Dup.cs"); // the user's own copy
+
+            Unassign("w");
+            Unassign("pl");
+            Unassign("d");
+            var combat = cfg.modules.Single(x => x.name == "Combat");
+            ModuleEdits.Assign(cfg, scan, new[] { "mv" }, combat, Source);
+            var p = Plan();
+            Assert.IsFalse(p.edits.Any(x => x.guid == "pl" && x.removeMarkedUsings.Count > 0), "Shield is written under #if !UNITY_EDITOR");
+            CollectionAssert.AreEqual(new[] { "Game.Combat" }, p.edits.Single(x => x.guid == "d").removeMarkedUsings);
+            CollectionAssert.AreEqual(new[] { "Game.Combat" }, p.edits.Single(x => x.guid == "mv").removeMarkedUsings, "Mover now lives in Game.Combat");
+            Execute(p);
+            StringAssert.Contains("using Game.Combat; // monome:using", Source(S + "Player.cs"));
+            var dup = Source(S + "Dup.cs");
+            StringAssert.StartsWith("using Game.Combat;\n", dup);
+            StringAssert.DoesNotContain("monome:using", dup);
+            StringAssert.DoesNotContain("using", Source(S + "Combat/Mover.cs"));
+        }
+
+        [Test]
+        public void RestoreToGlobal_LeavingAConditionalUsingWithCodeBelowAnAttribute_IsAWarning()
+        {
+            Add(S + "W.cs", "w", "W");
+            Assign("Combat", "w");
+            Execute(Plan());
+            disk.sourceByGuid["w"] = "[assembly: Foo]\nnamespace Game.Combat\n{\n#if UNITY_EDITOR\n    using UnityEditor;\n    class E {}\n#endif\n    class W {}\n}\n";
+            Unassign("w");
+            var p = Plan();
+            var i = p.issues.Single(x => x.code == IssueCode.UsingBelowAttribute);
+            Assert.AreEqual(Severity.Warning, i.severity);
+            Assert.AreEqual(S + "Combat/W.cs", i.path);
         }
 
         [Test]

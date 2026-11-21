@@ -35,6 +35,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public string setNamespace; // null = unchanged, "" = back to global
         public List<string> addUsings = new List<string>();
         public List<string> removeUsings = new List<string>();
+        public List<string> removeMarkedUsings = new List<string>(); // only the `using N; // monome:using` line goes
         public bool resetAliases; // drop the file's marked (`// monome:alias`) aliases first, then add `aliases`
         public List<(string alias, string target)> aliases = new List<(string, string)>(); // marked, inside the namespace block (ApplyPlanner ShadowAliases)
         public List<(string type, string oldNs, string oldAsm)> movedFrom = new List<(string, string, string)>(); // type = simple name, Cecil arity kept
@@ -133,6 +134,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (fates.Changes(f, out _, out var newNs)) op.setNamespace = newNs;
                 (op.addUsings, op.removeUsings) = fates.Usings(f);
                 op.removeUsings = op.removeUsings.Union(UnreachableUsings(f)).OrderBy(n => n, StringComparer.Ordinal).ToList();
+                op.removeMarkedUsings = fates.StaleMarkedUsings(f).Except(op.removeUsings).ToList();
                 // Marked aliases are recomputed from scratch; the file is edited only when the set changes.
                 var src = disk.sourceByGuid.TryGetValue(f.guid, out var text) ? text : null;
                 var needed = src == null ? new List<(string, string)>() : ShadowAliases(f, SourceRewriter.RemoveMarkedAliases(src));
@@ -151,7 +153,15 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     var className = oldNs.Length == 0 ? t.fullName : t.fullName.Substring(oldNs.Length + 1);
                     plan.reserializeTypeKeys.Add(oldNs + "|" + t.assemblyName + "|" + className);
                 }
-                if (op.setNamespace != null || op.resetAliases || op.addUsings.Count + op.removeUsings.Count + op.aliases.Count + op.movedFrom.Count > 0) plan.edits.Add(op);
+                // Unwrapped to the global namespace, a block using under #if next to code stays below a global attribute.
+                if (op.setNamespace == "" && src != null && SourceRewriter.UsingBelowGlobalAttribute(ModuleApplier.Rewrite(src, op, f.path, new List<string>())))
+                    plan.issues.Add(new Issue
+                    {
+                        severity = Severity.Warning, code = IssueCode.UsingBelowAttribute, path = f.path,
+                        message = $"{f.path}: after Apply a using inside an #if block that also holds code sits below [assembly: ...] (CS1529); " +
+                                  "move that using above the attribute by hand.",
+                    });
+                if (op.setNamespace != null || op.resetAliases || op.addUsings.Count + op.removeUsings.Count + op.removeMarkedUsings.Count + op.aliases.Count + op.movedFrom.Count > 0) plan.edits.Add(op);
             }
 
             // GUIDs first, so every asmdef can reference every other by GUID.

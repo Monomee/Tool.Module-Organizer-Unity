@@ -237,16 +237,17 @@ namespace Monome.UtilityPack.ModuleOrganizer
             if (Ws(b, NextLine(b))) b = NextLine(b);
             if (Ws(LineStart(c), c) && Ws(d, NextLine(d))) { c = LineStart(c); d = NextLine(d); }
 
-            // One indent level = the leading blanks of the block's first non-blank line (2 spaces, a tab...); none = no dedent.
+            // One indent level = the leading blanks of the block's first code line, skipping directives and comments
+            // (2 spaces, a tab...); code at column 0 = no dedent; no code line at all = 4 spaces.
             bool RealStart(int p) => p > 0 && t[p - 1] == '\n' && !s.cov[p - 1];
             bool At(int p, string x) => p + x.Length <= c && string.CompareOrdinal(t, p, x, 0, x.Length) == 0;
-            var unit = "";
+            var unit = Indent;
             for (var p = b; p < c; p = NextLine(p))
             {
                 if (!RealStart(p)) continue;
                 var e = p;
                 while (e < c && (t[e] == ' ' || t[e] == '\t')) e++;
-                if (e >= c || t[e] == '\r' || t[e] == '\n') continue;
+                if (e >= c || t[e] == '\r' || t[e] == '\n' || t[e] == '#' || s.cov[e]) continue;
                 unit = t.Substring(p, e - p);
                 break;
             }
@@ -271,15 +272,27 @@ namespace Monome.UtilityPack.ModuleOrganizer
         }
 
         // Unwrapped, a block's own usings can land below a global attribute that stayed above the namespace ([assembly: X]
-        // before `namespace N { using Y; ...`): CS1529. Moves those using lines (outside #if/#region) above the first global
-        // attribute line, or above the #if/#region holding it. ponytail: a using under #if after the attribute stays put.
+        // before `namespace N { using Y; ...`): CS1529. Moves those using lines, and whole top-level #if...#endif groups of
+        // only usings, blank lines and comments, above the first global attribute line, or above the #if/#region holding
+        // it. A group that also holds code stays (UsingBelowGlobalAttribute finds it; the planner warns).
         static string HoistUsings(string text)
         {
             var s = new Src(text);
             var attr = s.top.FindIndex(k => k.kind == Kind.Attr);
             if (attr < 0) return text;
-            var move = new HashSet<int>(Enumerable.Range(attr + 1, s.top.Count - attr - 1)
-                .Where(i => s.top[i].kind == Kind.Using && s.Boundary(i) && !s.StartsInSpan(i)));
+            var move = new HashSet<int>();
+            for (var i = attr + 1; i < s.top.Count; i++)
+            {
+                if (s.top[i].kind == Kind.Using && s.Boundary(i) && !s.StartsInSpan(i)) move.Add(i);
+                if (s.top[i].dir != "if" || s.top[i - 1].depth != 0 || !s.top[i - 1].clean) continue;
+                var j = i + 1;
+                while (j < s.top.Count && s.top[j].depth > 0) j++;
+                if (j == s.top.Count || !s.top[j].clean) continue; // runs into code: stays
+                var group = Enumerable.Range(i, j - i + 1).ToList();
+                if (group.All(k => s.top[k].kind is Kind.Using or Kind.Blank or Kind.Comment or Kind.Directive) && group.Any(k => s.top[k].kind == Kind.Using))
+                    move.UnionWith(group);
+                i = j;
+            }
             if (move.Count == 0) return text;
             var at = attr;
             while (at > 0 && s.top[at - 1].depth > 0) at--;
@@ -298,6 +311,15 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return sb.ToString();
         }
 
+        // A top-level using after the first global attribute (CS1529), e.g. one in an #if group that also holds code,
+        // which HoistUsings leaves where it is.
+        public static bool UsingBelowGlobalAttribute(string src)
+        {
+            var s = new Src(NoBom(src ?? ""));
+            var attr = s.top.FindIndex(k => k.kind == Kind.Attr);
+            return attr >= 0 && s.top.Skip(attr + 1).Any(k => k.kind == Kind.Using);
+        }
+
         // Usings Apply adds carry this marker (mark: true), so a later restore can drop the ones the file no longer needs
         // without touching the user's own.
         public const string UsingMarker = "// monome:using";
@@ -311,6 +333,20 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return MarkedUsingRx.Matches(s.text).Cast<Match>().Where(m => IsCode(s, m))
                 .Select(m => Regex.Replace(m.Groups[1].Value, @"[@\s]", "")).Distinct().ToList();
         }
+
+        // Drops only the marked `using ns; // monome:using` line (a user's own `using ns;` stays), plus the blank line
+        // AddUsing put after it when it now starts the file.
+        public static string RemoveMarkedUsing(string src, string ns) => KeepBom(src, body =>
+        {
+            var s = new Src(body);
+            var hit = MarkedUsingRx.Matches(body).Cast<Match>()
+                .FirstOrDefault(m => IsCode(s, m) && Regex.Replace(m.Groups[1].Value, @"[@\s]", "") == ns);
+            if (hit == null) return body;
+            var i = s.LineOf(hit.Index);
+            var end = s.lines[i].next;
+            if (s.lines[i].start == 0 && i + 1 < s.lines.Count && s.Line(i + 1).Trim().Length == 0) end = s.lines[i + 1].next;
+            return body.Remove(s.lines[i].start, end - s.lines[i].start);
+        });
 
         public static string AddUsing(string src, string ns, bool mark = false) => KeepBom(src, body =>
         {

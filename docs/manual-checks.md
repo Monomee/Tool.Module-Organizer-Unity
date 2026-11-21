@@ -198,7 +198,7 @@ Console: bấm chuột phải vào dòng lỗi > **Copy**, hoặc gửi file `Ed
      firstpass hoặc thuộc một asmdef không do tool tạo (không gán được); kéo từ cửa sổ Project một thứ không phải `.cs`
      hay thư mục; danh sách trong thẻ chưa được chọn trước khi kéo (phải bấm chọn dòng rồi mới kéo).
    - Gửi lại: ảnh chụp cửa sổ lúc đang kéo (thấy con trỏ), đường dẫn file đã kéo, kéo từ đâu (cây bên trái, thẻ khác,
-     cửa sổ Project), và Console có lỗi `[ModuleOrganizer]` hay exception nào không.
+     cửa sổ Project), và Console có lỗi `[Module Organizer]` hay exception nào không.
 
 2. **Bố cục cửa sổ vỡ hoặc bị ép khi cửa sổ nhỏ** (cột chồng lên nhau, nút bị che, tab Issues/Plan không cuộn được).
    - Nguyên nhân có thể: USS/UXML không được nạp (cửa sổ hiện hộp lỗi `Missing ...uxml`), hoặc kích thước tối thiểu

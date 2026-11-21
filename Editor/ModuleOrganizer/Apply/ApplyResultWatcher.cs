@@ -43,7 +43,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
 
         public static bool Pending => SessionState.GetBool(PendingKey, false);
 
-        // Domain reloads seen while Pending; the check gives up after MaxReloads (the Result tab shows both).
+        // Domain reloads seen while Pending; the check gives up on reload MaxReloads (the Result tab shows both).
         public static int PendingReloads => SessionState.GetInt(ReloadsKey, 0);
 
         public static ApplyResult LastResult
@@ -70,7 +70,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
             var reloads = SessionState.GetInt(ReloadsKey, 0) + 1;
             SessionState.SetInt(ReloadsKey, reloads);
-            if (reloads > MaxReloads)
+            if (reloads >= MaxReloads)
             {
                 var r = new ApplyResult { buildTarget = EditorUserBuildSettings.activeBuildTarget.ToString() };
                 r.warnings.Add($"The Apply result check did not finish within {MaxReloads} domain reloads and was dropped; check the Console.");

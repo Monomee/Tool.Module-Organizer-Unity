@@ -30,48 +30,53 @@ namespace Monome.UtilityPack.ModuleOrganizer
             var texts = Preflight(plan, errors);
             if (errors.Count > 0) return errors;
 
+            var done = new List<AsmdefOp>();
+            var touched = false; // touchedDisk; every exit after the first disk change goes through Finish
+
             // Case-only renames first, outside asset editing (the temporary name must be in the database): folders on the
-            // way to each target that exist under another case (combat -> Combat), outermost first, then files. A file that
-            // only moved with its folder is done; the other moves start inside the renamed folders.
-            var moves = plan.moves.Select(m => new MoveOp { guid = m.guid, from = m.from, to = m.to }).ToList();
-            foreach (var (from, to) in FolderCaseRenames(moves.Select(m => m.to)))
+            // way to each target that exist under another case (combat -> Combat), outermost first, then files. Only
+            // folders strictly below a scope folder or the modules root are renamed; above that a target follows the
+            // folder's case on disk. A file that only moved with its folder is done; the other moves start inside the
+            // renamed folders.
+            var roots = cfg.scopeFolders.Append(cfg.EffectiveModulesRoot).ToList();
+            var renames = new List<(string from, string to)>();
+            var moves = plan.moves.Select(m => new MoveOp { guid = m.guid, from = m.from, to = CaseFix(m.to, true, roots, renames) }).ToList();
+            var createFolders = plan.createFolders.Select(f => CaseFix(f, false, roots, renames)).ToList();
+            foreach (var (from, to) in renames)
             {
-                var err = CaseRename(from, to);
+                var err = CaseRename(from, to, ref touched);
                 if (err != null)
                 {
                     errors.Add($"Could not rename folder {from} to {to}: {err}");
-                    return errors;
+                    return Finish(false, out touchedDisk);
                 }
-                touchedDisk = true;
                 foreach (var m in moves.Where(m => PathRules.IsUnder(m.from, from))) m.from = to + m.from.Substring(from.Length);
             }
             foreach (var m in moves.Where(m => m.from != m.to && string.Equals(m.from, m.to, StringComparison.OrdinalIgnoreCase)))
             {
-                var err = CaseRename(m.from, m.to);
+                var err = CaseRename(m.from, m.to, ref touched);
                 if (err != null)
                 {
                     errors.Add($"Could not move {m}: {err}");
-                    return errors;
+                    return Finish(false, out touchedDisk);
                 }
-                touchedDisk = true;
                 m.from = m.to;
             }
 
             // Before StartAssetEditing: a folder created inside it is not in the database yet, so MoveAsset into it fails.
-            foreach (var f in plan.createFolders)
+            foreach (var f in createFolders)
             {
                 if (AssetDatabase.IsValidFolder(f)) continue;
                 var cut = f.LastIndexOf('/');
                 if (cut >= 0 && !string.IsNullOrEmpty(AssetDatabase.CreateFolder(f.Substring(0, cut), f.Substring(cut + 1))))
                 {
-                    touchedDisk = true;
+                    touched = true;
                     continue;
                 }
                 errors.Add($"Could not create folder {f}");
-                return errors;
+                return Finish(false, out touchedDisk);
             }
 
-            var done = new List<AsmdefOp>();
             var movesOk = true;
             AssetDatabase.StartAssetEditing();
             try
@@ -81,7 +86,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     var err = AssetDatabase.MoveAsset(m.from, m.to);
                     if (string.IsNullOrEmpty(err))
                     {
-                        touchedDisk = true;
+                        touched = true;
                         continue;
                     }
                     errors.Add($"Could not move {m}: {err}");
@@ -95,7 +100,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         {
                             // New asmdef: its .meta goes down first, so the planned GUID is the one Unity imports it with.
                             // Writes and deletes count as touching disk once attempted: a failed write may have truncated the file.
-                            touchedDisk = true;
+                            touched = true;
                             if (!File.Exists(op.path + ".meta")) File.WriteAllText(op.path + ".meta", Meta(op.guid));
                             File.WriteAllText(op.path, AsmdefJson.Write(op));
                             done.Add(op);
@@ -105,14 +110,14 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     foreach (var (path, bytes) in texts)
                         try
                         {
-                            touchedDisk = true;
+                            touched = true;
                             File.WriteAllBytes(path, bytes);
                         }
                         catch (Exception e) { errors.Add($"Could not write {path}: {e.Message}"); }
 
                     foreach (var op in plan.asmdefs.Where(a => a.delete))
                     {
-                        touchedDisk = true;
+                        touched = true;
                         if (AssetDatabase.DeleteAsset(op.path)) done.Add(op);
                         else errors.Add($"Could not delete {op.path}");
                     }
@@ -120,7 +125,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     foreach (var d in plan.deleteFoldersIfEmpty)
                     {
                         if (!Directory.Exists(d) || Directory.EnumerateFileSystemEntries(d).Any()) continue;
-                        touchedDisk = true;
+                        touched = true;
                         if (!AssetDatabase.DeleteAsset(d)) errors.Add($"Could not delete empty folder {d}");
                     }
                 }
@@ -130,16 +135,25 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 AssetDatabase.StopAssetEditing();
             }
 
-            if (refresh) AssetDatabase.Refresh();
-            // Owed until ApplyResultWatcher re-serializes after a good compile, even if this run stopped part way: a later
-            // move of the same types would otherwise lose [SerializeReference] data. Outside Undo, like Record.
-            if (touchedDisk)
-                foreach (var k in plan.reserializeTypeKeys)
-                    if (!cfg.owedReserializeKeys.Contains(k)) cfg.owedReserializeKeys.Add(k);
-            if (movesOk) Record(plan, cfg, done, refresh, errors);
-            EditorUtility.SetDirty(cfg);
-            if (EditorUtility.IsPersistent(cfg)) AssetDatabase.SaveAssetIfDirty(cfg);
-            return errors;
+            return Finish(movesOk, out touchedDisk);
+
+            // Refresh, owe the keys, record (record: the moves all worked), save the config. An exit before any disk
+            // change that records nothing just returns.
+            List<string> Finish(bool record, out bool touchedOut)
+            {
+                touchedOut = touched;
+                if (!touched && !record) return errors;
+                if (refresh) AssetDatabase.Refresh();
+                // Owed until ApplyResultWatcher re-serializes after a good compile, even if this run stopped part way: a
+                // later move of the same types would otherwise lose [SerializeReference] data. Outside Undo, like Record.
+                if (touched)
+                    foreach (var k in plan.reserializeTypeKeys)
+                        if (!cfg.owedReserializeKeys.Contains(k)) cfg.owedReserializeKeys.Add(k);
+                if (record) Record(plan, cfg, done, refresh, errors);
+                EditorUtility.SetDirty(cfg);
+                if (EditorUtility.IsPersistent(cfg)) AssetDatabase.SaveAssetIfDirty(cfg);
+                return errors;
+            }
         }
 
         // Every check that needs no change: move sources, destinations and their folders, and each edited file's
@@ -210,6 +224,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
             if (op.aliases.Count > 0) text = SourceRewriter.AddNamespaceAliases(text, op.aliases);
             foreach (var u in op.removeUsings) text = SourceRewriter.RemoveUsing(text, u);
+            foreach (var u in op.removeMarkedUsings) text = SourceRewriter.RemoveMarkedUsing(text, u);
             foreach (var u in op.addUsings) text = SourceRewriter.AddUsing(text, u, mark: true);
             foreach (var (type, oldNs, oldAsm) in op.movedFrom)
                 if (!SourceRewriter.TryAddMovedFrom(text, type, oldNs, oldAsm, out text))
@@ -217,39 +232,42 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return text;
         }
 
-        // Folders on the way to each target that exist on disk under another case (to rename), outermost first.
-        static List<(string from, string to)> FolderCaseRenames(IEnumerable<string> targets)
+        // path with each existing folder on the way (the last segment too unless file) in its case on disk, except a folder
+        // strictly below an authorized root (scope folder or modules root) whose case differs: it keeps the planned case
+        // and goes into renames (outermost first), e.g. Modules/combat -> Modules/Combat. A root, or a folder above one,
+        // is never renamed: the path follows its disk case instead.
+        internal static string CaseFix(string path, bool file, IReadOnlyCollection<string> roots, List<(string from, string to)> renames)
         {
-            var list = new List<(string, string)>();
-            foreach (var t in targets)
+            var parts = PathRules.Norm(path).Split('/');
+            for (var i = 1; i < parts.Length - (file ? 1 : 0); i++)
             {
-                var parts = PathRules.Norm(t).Split('/');
-                for (var i = 1; i < parts.Length - 1; i++)
-                {
-                    var parent = string.Join("/", parts, 0, i);
-                    var actual = Directory.Exists(parent)
-                        ? Directory.GetDirectories(parent).Select(Path.GetFileName).FirstOrDefault(n => string.Equals(n, parts[i], StringComparison.OrdinalIgnoreCase))
-                        : null;
-                    if (actual == null) break; // created by the plan
-                    var rename = (parent + "/" + actual, parent + "/" + parts[i]);
-                    if (actual != parts[i] && !list.Contains(rename)) list.Add(rename);
-                }
+                var parent = string.Join("/", parts, 0, i);
+                var actual = Directory.Exists(parent)
+                    ? Directory.GetDirectories(parent).Select(Path.GetFileName).FirstOrDefault(n => string.Equals(n, parts[i], StringComparison.OrdinalIgnoreCase))
+                    : null;
+                if (actual == null) break; // created by the plan
+                if (actual == parts[i]) continue;
+                var wanted = parent + "/" + parts[i];
+                if (!roots.Any(r => PathRules.IsUnder(wanted, r))) parts[i] = actual;
+                else if (!renames.Contains((parent + "/" + actual, wanted))) renames.Add((parent + "/" + actual, wanted));
             }
-            return list;
+            return string.Join("/", parts);
         }
 
         // A case-only rename (X -> x) of a file or folder, through a temporary name: MoveAsset refuses a target that differs
-        // only in case. Null when it worked; on a failed second step the asset goes back to its old name.
-        static string CaseRename(string from, string to)
+        // only in case. Null when it worked; on a failed second step the asset goes back to its old name, and if that fails
+        // too the error says where it was left.
+        static string CaseRename(string from, string to, ref bool touched)
         {
             var ext = Path.GetExtension(from);
             var tmp = from.Substring(0, from.Length - ext.Length) + "__monome_tmp" + ext;
             var err = AssetDatabase.MoveAsset(from, tmp);
             if (!string.IsNullOrEmpty(err)) return err;
+            touched = true;
             err = AssetDatabase.MoveAsset(tmp, to);
             if (string.IsNullOrEmpty(err)) return null;
-            AssetDatabase.MoveAsset(tmp, from);
-            return err;
+            var back = AssetDatabase.MoveAsset(tmp, from);
+            return string.IsNullOrEmpty(back) ? err : $"{err}; left at {tmp}, rename it back to {from}";
         }
 
         // Only GUIDs the project really holds are recorded; the rest only after a fully clean run.

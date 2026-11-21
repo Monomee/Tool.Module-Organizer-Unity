@@ -141,6 +141,25 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void Unwrap_IndentUnit_ComesFromTheFirstCodeLine_NotADirectiveOrComment()
+        {
+            Assert.AreEqual("#if A\n// note\nclass A\n{\n  int x;\n}\n#endif\n",
+                SourceRewriter.SetNamespace("namespace N\n{\n#if A\n// note\n  class A\n  {\n    int x;\n  }\n#endif\n}\n", ""));
+        }
+
+        [Test]
+        public void Unwrap_ConditionalUsingGroupBelowAnAssemblyAttribute_MovesWhole_GroupWithCodeStaysAndIsReported()
+        {
+            var r = SourceRewriter.SetNamespace("[assembly: Foo]\nnamespace N\n{\n#if UNITY_EDITOR\n    using UnityEditor;\n#endif\n    class C {}\n}\n", "");
+            Assert.AreEqual("#if UNITY_EDITOR\nusing UnityEditor;\n#endif\n[assembly: Foo]\nclass C {}\n", r);
+            Assert.IsFalse(SourceRewriter.UsingBelowGlobalAttribute(r));
+
+            r = SourceRewriter.SetNamespace("[assembly: Foo]\nnamespace N\n{\n#if UNITY_EDITOR\n    using UnityEditor;\n    class E {}\n#endif\n}\n", "");
+            StringAssert.StartsWith("[assembly: Foo]\n#if UNITY_EDITOR\nusing UnityEditor;\n", r);
+            Assert.IsTrue(SourceRewriter.UsingBelowGlobalAttribute(r));
+        }
+
+        [Test]
         public void Unwrap_BlockUsingBelowAnAssemblyAttribute_MovesAboveIt()
         {
             Assert.AreEqual("using X;\nusing Y;\n[assembly: Foo]\n\nclass C {}\n",

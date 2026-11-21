@@ -159,8 +159,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
 
         // Usings Apply adds to and removes from f (sorted). Added: new namespaces of moved types f uses, and, when f's own
         // namespace changes, namespaces of unmoved types f used to see through its old enclosing namespaces. Removed:
-        // f's `using`s of namespaces that disappear, and the usings Apply once added (marked) that f no longer needs: no type
-        // f references ends up in that namespace (a restored file drops the using it got when it moved into a module).
+        // f's `using`s of namespaces that disappear.
         public (List<string> add, List<string> remove) Usings(ScriptFile f)
         {
             var enclosing = Enclosing(f);
@@ -173,12 +172,27 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (m.TryGetValue(ModuleValidator.Outer(tn), out var mv)) add.Add(mv.newNs);
                 else if (oldEnclosing.Contains(t.ns ?? "")) add.Add(t.ns);
             }
-            var needed = new HashSet<string>(f.referencedTypes.Select(ModuleValidator.Outer).Select(o =>
-                m.TryGetValue(o, out var mv) ? mv.newNs : scan.types.TryGetValue(o, out var t) ? t.ns ?? "" : ModuleValidator.NsOf(o)));
-            var remove = FileUsings(f).Where(GoneNamespaces().Contains)
-                .Concat(SourceRewriter.MarkedUsings(source(f)).Where(n => !needed.Contains(n))).Distinct().Where(n => !enclosing.Contains(n));
+            var remove = FileUsings(f).Where(GoneNamespaces().Contains).Where(n => !enclosing.Contains(n));
             return (add.Where(n => !enclosing.Contains(n)).OrderBy(n => n, StringComparer.Ordinal).ToList(),
                 remove.OrderBy(n => n, StringComparer.Ordinal).ToList());
+        }
+
+        // The usings Apply once added (marked) that f no longer needs, sorted; Apply drops only the marked line. Redundant:
+        // f's final namespace is that namespace or inside it. Stale: no type f references (per the Editor IL) ends up there,
+        // and no identifier f writes unqualified in any #if branch (player-only code, nameof) is a type name declared there
+        // after Apply.
+        public List<string> StaleMarkedUsings(ScriptFile f)
+        {
+            var marked = SourceRewriter.MarkedUsings(source(f));
+            if (marked.Count == 0) return marked;
+            var enclosing = Enclosing(f);
+            var m = MovedTypes();
+            string Final(string outer) => m.TryGetValue(outer, out var mv) ? mv.newNs : scan.types.TryGetValue(outer, out var t) ? t.ns ?? "" : ModuleValidator.NsOf(outer);
+            var needed = new HashSet<string>(f.referencedTypes.Select(ModuleValidator.Outer).Select(Final));
+            var written = ModuleValidator.UnqualifiedNames(source(f));
+            bool Declares(string ns) => scan.types.Keys.Where(n => !n.Contains('/') && Final(n) == ns)
+                .Any(n => written.Contains(ModuleValidator.SimpleName(n).Split('`')[0]));
+            return marked.Where(n => enclosing.Contains(n) || !needed.Contains(n) && !Declares(n)).OrderBy(n => n, StringComparer.Ordinal).ToList();
         }
     }
 

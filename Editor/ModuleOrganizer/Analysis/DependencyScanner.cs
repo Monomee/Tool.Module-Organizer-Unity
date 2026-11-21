@@ -38,7 +38,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 {
                     var dll = Path.Combine(scriptAssembliesDir, a.name + ".dll");
                     if (File.Exists(dll)) loaded.Add((a, Read(dll, resolver)));
-                    else UnityEngine.Debug.LogWarning($"[ModuleOrganizer] Scan skipped {a.name}: {dll} not found.");
+                    else UnityEngine.Debug.LogWarning($"[Module Organizer] Scan skipped {a.name}: {dll} not found.");
                 }
 
                 // Pass 1: every type declared by a script assembly. A full name two script assemblies declare keeps the
@@ -577,7 +577,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     why = e.Message;
                 }
             }
-            UnityEngine.Debug.LogWarning($"[ModuleOrganizer] No symbols for {Path.GetFileName(dll)} ({why}); file mapping falls back to source declarations.");
+            UnityEngine.Debug.LogWarning($"[Module Organizer] No symbols for {Path.GetFileName(dll)} ({why}); file mapping falls back to source declarations.");
             return AssemblyDefinition.ReadAssembly(new MemoryStream(bytes), new ReaderParameters { AssemblyResolver = resolver });
         }
 
