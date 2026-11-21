@@ -103,17 +103,22 @@ namespace Monome.UtilityPack.ModuleOrganizer
             r.editorCompileOk = true;
             try
             {
-                Reserialize(ParseKeys(SessionState.GetString(KeysKey, "")), r);
-                CompilePlayer(r);
-            }
-            catch (Exception e)
-            {
-                r.warnings.Add("Post-Apply check failed: " + e.Message);
-                Debug.LogException(e);
+                Guard(() => Reserialize(ParseKeys(SessionState.GetString(KeysKey, "")), r), "Re-serializing assets", r);
+                Guard(() => CompilePlayer(r), "Player script compilation", r);
             }
             finally
             {
                 Finish(r);
+            }
+        }
+
+        static void Guard(Action step, string what, ApplyResult r)
+        {
+            try { step(); }
+            catch (Exception e)
+            {
+                r.warnings.Add($"{what} failed: {e.Message}");
+                Debug.LogException(e);
             }
         }
 
@@ -127,21 +132,36 @@ namespace Monome.UtilityPack.ModuleOrganizer
         }
 
         // MovedFrom makes Unity load the old names; re-serializing writes the new ns/asm so the YAML matches before the next move.
+        // Every text-serialized asset under Assets/ (any extension: .prefab, .controller, .playable...), found by its header.
         static void Reserialize(List<(string ns, string asm, string cls)> keys, ApplyResult r)
         {
             if (keys.Count == 0) return;
+            if (EditorSettings.serializationMode != SerializationMode.ForceText)
+                r.warnings.Add("Project uses binary/mixed asset serialization; binary assets referencing moved [SerializeReference] types were not " +
+                               "re-serialized. Switch Project Settings > Editor > Asset Serialization to Force Text, or re-save those assets " +
+                               "before moving the types again.");
+            var head = new byte[5];
             foreach (var p in AssetDatabase.GetAllAssetPaths())
             {
-                if (!p.StartsWith("Assets/", StringComparison.Ordinal)) continue;
-                var ext = Path.GetExtension(p).ToLowerInvariant();
-                if (ext != ".prefab" && ext != ".unity" && ext != ".asset") continue;
-                // ponytail: reads whole files to check the header; peek the first bytes if big binary assets make this slow.
-                var text = File.ReadAllText(p);
-                if (!text.StartsWith("%YAML", StringComparison.Ordinal)) continue;
-                if (keys.Any(k => text.Contains(k.cls) && ContainsManagedRefType(text, k.ns, k.asm, k.cls))) r.reserialized.Add(p);
+                if (!p.StartsWith("Assets/", StringComparison.Ordinal) || !File.Exists(p)) continue; // folders
+                try
+                {
+                    using (var s = File.OpenRead(p))
+                        if (s.Read(head, 0, head.Length) < head.Length || !IsYamlHeader(head)) continue;
+                    var text = File.ReadAllText(p);
+                    if (keys.Any(k => text.Contains(k.cls) && ContainsManagedRefType(text, k.ns, k.asm, k.cls))) r.reserialized.Add(p);
+                }
+                catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+                {
+                    r.warnings.Add($"Could not read {p} to check it for moved [SerializeReference] types: {e.Message}");
+                }
             }
             if (r.reserialized.Count > 0) AssetDatabase.ForceReserializeAssets(r.reserialized);
         }
+
+        // Unity text-serialized assets start with "%YAML".
+        public static bool IsYamlHeader(byte[] head) =>
+            head != null && head.Length >= 5 && head[0] == '%' && head[1] == 'Y' && head[2] == 'A' && head[3] == 'M' && head[4] == 'L';
 
         static void CompilePlayer(ApplyResult r)
         {

@@ -16,7 +16,10 @@ Setup:
    `namespace Probe.Old { [System.Serializable] public class ProbePayload { public int x = 7; } }`
 4. Create `Assets/ProbeTmp/Editor/MonomeProbe.cs` with:
    - an `[InitializeOnLoad]` static ctor that subscribes `ApplyResultWatcher.ResultReady += () => Debug.Log("MONOME_RESULT " + JsonUtility.ToJson(ApplyResultWatcher.LastResult));`
-   - `[MenuItem("Probe/Make Asset")]`: `CreateInstance<ProbeHolder>()`, set `p = new Probe.Old.ProbePayload()`, `AssetDatabase.CreateAsset(h, "Assets/ProbeTmp/ProbeAsset.asset")`, `SaveAssets()`.
+   - `[MenuItem("Probe/Make Asset")]`: `CreateInstance<ProbeHolder>()`, set
+     `p = System.Activator.CreateInstance(System.Type.GetType("Probe.Old.ProbePayload, Assembly-CSharp"))` (by reflection:
+     a compile-time `new Probe.Old.ProbePayload()` would break the compile once step 6 removes that namespace),
+     `AssetDatabase.CreateAsset(h, "Assets/ProbeTmp/ProbeAsset.asset")`, `SaveAssets()`.
    - `[MenuItem("Probe/Move")]`, `[MenuItem("Probe/Editor Error")]`, `[MenuItem("Probe/Player Error")]`: each calls
      `ApplyResultWatcher.BeginPending(keys)`, writes one file with `File.WriteAllText`, then `AssetDatabase.Refresh()`
      (sources and keys below).

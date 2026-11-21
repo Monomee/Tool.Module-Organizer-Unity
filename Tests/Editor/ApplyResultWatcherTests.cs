@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -48,6 +49,17 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         public void ContainsManagedRefType_ToleratesSpacing()
         {
             Assert.IsTrue(ApplyResultWatcher.ContainsManagedRefType("type: { class:Payload ,ns:  Game.Old,asm: Assembly-CSharp }", "Game.Old", "Assembly-CSharp", "Payload"));
+        }
+
+        [Test]
+        public void IsYamlHeader_TextVsBinary()
+        {
+            Assert.IsTrue(ApplyResultWatcher.IsYamlHeader(Encoding.ASCII.GetBytes("%YAML 1.1\n%TAG !u!")));
+            Assert.IsTrue(ApplyResultWatcher.IsYamlHeader(Encoding.ASCII.GetBytes("%YAML")));
+            Assert.IsFalse(ApplyResultWatcher.IsYamlHeader(new byte[] { 0x00, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00 })); // binary asset
+            Assert.IsFalse(ApplyResultWatcher.IsYamlHeader(Encoding.ASCII.GetBytes("%YAM")));
+            Assert.IsFalse(ApplyResultWatcher.IsYamlHeader(Encoding.ASCII.GetBytes("using UnityEngine;")));
+            Assert.IsFalse(ApplyResultWatcher.IsYamlHeader(null));
         }
 
         [Test]
