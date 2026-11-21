@@ -198,6 +198,35 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         public void FindQualifiedUses_EmptyNamespace_ReturnsNothing() =>
             CollectionAssert.IsEmpty(SourceRewriter.FindQualifiedUses("class X { Gun g; }", "", new[] { "Gun" }));
 
+        // --- fix round 2 regressions ---
+
+        [Test]
+        public void AddMovedFrom_PartialParts_OnlyFirstGetsIt()
+        {
+            var src = "partial class P {}\npartial class P {}\n";
+            var r = SourceRewriter.AddMovedFrom(src, "P", "", "A");
+            Assert.AreEqual(MF + "\npartial class P {}\npartial class P {}\n", r);
+            Assert.AreEqual(r, SourceRewriter.AddMovedFrom(r, "P", "", "A"));
+            var second = "partial class P {}\n" + MF + "\npublic partial class P {}\n";
+            Assert.AreEqual(second, SourceRewriter.AddMovedFrom(second, "P", "", "A"));
+        }
+
+        [Test]
+        public void Wrap_WouldSwallowAssemblyAttribute_NotRewritable()
+        {
+            var src = "#region All\n[assembly: System.CLSCompliant(true)]\nclass P {}\n#endregion\n";
+            Assert.IsFalse(SourceRewriter.Parse(src).Rewritable);
+            Assert.Throws<InvalidOperationException>(() => SourceRewriter.SetNamespace(src, "N"));
+        }
+
+        [Test]
+        public void TryAddMovedFrom_ArityCountsTopLevelParametersOnly()
+        {
+            Assert.IsTrue(SourceRewriter.TryAddMovedFrom("class Box<[A(1, 2)] T> {}", "Box`1", "", "A", out _));
+            Assert.IsTrue(SourceRewriter.TryAddMovedFrom("class Map<TKey, List<TValue>> {}", "Map`2", "", "A", out _));
+            Assert.IsFalse(SourceRewriter.TryAddMovedFrom("class Map<TKey, List<TValue>> {}", "Map`3", "", "A", out _));
+        }
+
         [Test]
         public void FindQualifiedUses_IgnoresCommentsStringsAndNearMisses()
         {

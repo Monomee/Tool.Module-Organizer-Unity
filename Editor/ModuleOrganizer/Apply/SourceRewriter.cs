@@ -28,6 +28,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
         static readonly Regex UsingRx = new Regex(@"^(?:using\s+(?!var\b)[^;(]+;\s*)+$", RegexOptions.Compiled);
         static readonly Regex ExternRx = new Regex(@"^extern\s+alias\s+\w+\s*;$", RegexOptions.Compiled);
         static readonly Regex GlobalAttrRx = new Regex(@"^\[\s*(?:assembly|module)\s*:", RegexOptions.Compiled);
+        static readonly Regex GlobalAttrAnywhereRx = new Regex(@"\[\s*(?:assembly|module)\s*:", RegexOptions.Compiled);
+        static readonly Regex PartialRx = new Regex(@"(?<![\w@])partial(?!\w)", RegexOptions.Compiled);
         static readonly Regex DirectiveRx = new Regex(@"^\s*#\s*(\w*)", RegexOptions.Compiled);
         static readonly Regex MovedFromRx = new Regex(@"\bMovedFrom(?:Attribute)?\b", RegexOptions.Compiled);
         static readonly Regex AsmQualifiedRx = new Regex(@",\s*Assembly-CSharp", RegexOptions.Compiled);
@@ -155,6 +157,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 else if (depth == 0 && info.namespaces.Count > 0 && info.close < 0 && m.Index > info.open) info.close = m.Index;
             }
             if (depth != 0) info.nested = true;
+            // Global file: wrapping must not pull an [assembly:]/[module:] attribute into the namespace (CS1730).
+            if (info.IsGlobal && GlobalAttrAnywhereRx.IsMatch(s.mask, s.After(s.HeaderEnd(s.top.Count) - 1))) info.nested = true;
             if (info.namespaces.Count == 1 && !info.nested &&
                 !(OnlyBlank(s.mask, s.TopEnd, info.start) && OnlyBlank(s.mask, info.close + 1, s.mask.Length)))
                 info.nested = true;
@@ -317,11 +321,18 @@ namespace Monome.UtilityPack.ModuleOrganizer
                        "\", sourceAssembly: \"" + oldAssembly + "\")]";
             var decls = Regex.Matches(s.mask, @"(?<![@\w])(?:class|struct|interface|enum)\s+@?" + Regex.Escape(name) + @"(?!\w)")
                 .Cast<Match>().Where(m => Arity(s.mask, m.Index + m.Length) == arity).ToList();
+            bool Has(int kw) { var st = DeclStart(s.mask, kw, true); return MovedFromRx.IsMatch(s.mask.Substring(st, kw - st)); }
+            bool IsPartial(int kw) { var st = DeclStart(s.mask, kw, false); return PartialRx.IsMatch(s.mask.Substring(st, kw - st)); }
+            // Non-partial declarations are #if alternatives: each gets one. Partial parts are one type: only the first
+            // part gets it (none if any part already has it), else CS0579.
+            var partials = decls.Where(m => IsPartial(m.Index)).ToList();
+            var targets = decls.Where(m => !partials.Contains(m) && !Has(m.Index)).ToList();
+            if (partials.Count > 0 && !partials.Any(m => Has(m.Index))) targets.Add(partials[0]);
+            targets.Sort((x, y) => x.Index.CompareTo(y.Index));
             var sb = new StringBuilder(body);
-            for (var d = decls.Count - 1; d >= 0; d--) // backwards so earlier offsets stay valid
+            for (var d = targets.Count - 1; d >= 0; d--) // backwards so earlier offsets stay valid
             {
-                var kw = decls[d].Index;
-                if (MovedFromRx.IsMatch(s.mask.Substring(DeclStart(s.mask, kw, true), kw - DeclStart(s.mask, kw, true)))) continue;
+                var kw = targets[d].Index;
                 var p = DeclStart(s.mask, kw, false);
                 var li = s.LineOf(p);
                 var ls = s.lines[li].start;
@@ -336,17 +347,22 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return decls.Count > 0;
         }
 
-        // Number of type parameters in a `<...>` right after offset i (0 when there is none).
+        // Number of type parameters in a `<...>` right after offset i (0 when there is none). Only top-level commas
+        // count: nested <...> and [attribute(...)] sections are skipped.
         static int Arity(string mask, int i)
         {
             while (i < mask.Length && char.IsWhiteSpace(mask[i])) i++;
             if (i >= mask.Length || mask[i] != '<') return 0;
-            int depth = 0, commas = 0;
+            int depth = 0, inner = 0, commas = 0;
             for (; i < mask.Length; i++)
             {
-                if (mask[i] == '<') depth++;
-                else if (mask[i] == '>' && --depth == 0) break;
-                else if (mask[i] == ',' && depth == 1) commas++;
+                var c = mask[i];
+                if (c == '[' || c == '(') inner++;
+                else if (c == ']' || c == ')') inner--;
+                else if (inner > 0) continue;
+                else if (c == '<') depth++;
+                else if (c == '>' && --depth == 0) break;
+                else if (c == ',' && depth == 1) commas++;
             }
             return commas + 1;
         }
