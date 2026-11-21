@@ -61,7 +61,11 @@ Open `TestHost~` in the Unity Editor (no compile errors). Covered headlessly by 
 gate, Ctrl+Z of an assign re-validates, Apply arms then disarms on re-validate). Manual only: the real drag and drop in
 5-8, the folder picker, layout, dialogs, and the whole Apply / reload / Sync part (steps 10-15).
 
-0. In the repo: `git switch -c tmp/window-check` (throwaway branch; step 15 resets it).
+> Các bước này chỉ đụng tới `TestHost~`; không chạy lệnh git phá hủy nào trên toàn repo.
+> These steps only touch `TestHost~`; never run a destructive repo-wide git command for this check.
+
+0. In the repo root run `git status --porcelain`. If it prints anything, **stop**: commit or stash your work first
+   (cleanup in step 15 discards everything under `TestHost~`).
 1. **Tools > Monome > Module Organizer**. Expected: HelpBox "No ModuleConfig yet", toolbar shows **Create ModuleConfig**
    (no config dropdown), Scan disabled.
 2. Click **Create ModuleConfig**. Expected: `Assets/ModuleConfig.asset` is created and selected in the dropdown; the scan
@@ -99,5 +103,7 @@ gate, Ctrl+Z of an assign re-validates, Apply arms then disarms on re-validate).
     reload the toolbar shows `⚠ N drift → Sync`; the Sync tab lists `AsmdefMovedOrRenamed · Alpha` and the note
     "Re-apply applies the whole config". Click **Take from disk** on that item. Expected: the item is gone and the Alpha
     module's folder is `Assets/_Fixtures/Scope/AlphaX`.
-15. Cleanup: close the window, then `git reset --hard && git clean -fd TestHost~/Assets && git switch - &&
-    git branch -D tmp/window-check`; let Unity reimport. `git status` shows nothing.
+15. Cleanup: close Unity. Run `git status --porcelain` and check that every listed path is under `TestHost~/` (if
+    anything else is listed, stop and sort it out by hand). Then, only for the test project:
+    `git checkout -- "TestHost~"` and `git clean -fd -- "TestHost~/Assets"`. Reopen `TestHost~` and let it reimport.
+    `git status --porcelain` prints nothing.

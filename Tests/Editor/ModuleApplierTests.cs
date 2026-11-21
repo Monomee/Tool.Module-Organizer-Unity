@@ -80,6 +80,21 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void TouchedDisk_FalseWhenFirstMoveFails_AfterPreflight()
+        {
+            // On disk (passes preflight) but never imported, so MoveAsset refuses it; the target folder already exists.
+            File.WriteAllText(T + "/raw.txt", "x");
+            var errors = ModuleApplier.Execute(new ApplyPlan
+            {
+                createFolders = { T },
+                moves = { new MoveOp { guid = "0123456789abcdef0123456789abcdef", from = T + "/raw.txt", to = T + "/moved.txt" } },
+            }, cfg, out var touched, refresh: false);
+            Assert.That(errors.Single(), Does.StartWith("Could not move"));
+            Assert.IsFalse(touched);
+            Assert.IsTrue(File.Exists(T + "/raw.txt"));
+        }
+
+        [Test]
         public void TextEdit_PreservesBomAndCrlf()
         {
             var src = "namespace Old\r\n{\r\n    public class A {}\r\n}\r\n";

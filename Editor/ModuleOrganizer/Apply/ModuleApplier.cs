@@ -19,7 +19,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
 
         public static List<string> Execute(ApplyPlan plan, ModuleConfig cfg, bool refresh = true) => Execute(plan, cfg, out _, refresh);
 
-        // touchedDisk: false when it stopped before creating a folder or moving/writing a file (plan errors, preflight).
+        // touchedDisk: true once anything was really changed (folder created, file moved/written/deleted); false when it
+        // stopped before that (plan errors, preflight, or the first mutation failing).
         public static List<string> Execute(ApplyPlan plan, ModuleConfig cfg, out bool touchedDisk, bool refresh = true)
         {
             touchedDisk = false;
@@ -44,14 +45,17 @@ namespace Monome.UtilityPack.ModuleOrganizer
 
             var done = new List<AsmdefOp>();
             var movesOk = true;
-            touchedDisk = true;
             AssetDatabase.StartAssetEditing();
             try
             {
                 foreach (var m in plan.moves.OrderBy(m => m.to.EndsWith(".asmdef", StringComparison.OrdinalIgnoreCase) ? 0 : 1))
                 {
                     var err = AssetDatabase.MoveAsset(m.from, m.to);
-                    if (string.IsNullOrEmpty(err)) continue;
+                    if (string.IsNullOrEmpty(err))
+                    {
+                        touchedDisk = true;
+                        continue;
+                    }
                     errors.Add($"Could not move {m}: {err}");
                     movesOk = false;
                     break;
@@ -62,23 +66,39 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         try
                         {
                             // New asmdef: its .meta goes down first, so the planned GUID is the one Unity imports it with.
-                            if (!File.Exists(op.path + ".meta")) File.WriteAllText(op.path + ".meta", Meta(op.guid));
+                            if (!File.Exists(op.path + ".meta"))
+                            {
+                                File.WriteAllText(op.path + ".meta", Meta(op.guid));
+                                touchedDisk = true;
+                            }
                             File.WriteAllText(op.path, AsmdefJson.Write(op));
+                            touchedDisk = true;
                             done.Add(op);
                         }
                         catch (Exception e) { errors.Add($"Could not write {op.path}: {e.Message}"); }
 
                     foreach (var (path, bytes) in texts)
-                        try { File.WriteAllBytes(path, bytes); }
+                        try
+                        {
+                            File.WriteAllBytes(path, bytes);
+                            touchedDisk = true;
+                        }
                         catch (Exception e) { errors.Add($"Could not write {path}: {e.Message}"); }
 
                     foreach (var op in plan.asmdefs.Where(a => a.delete))
-                        if (AssetDatabase.DeleteAsset(op.path)) done.Add(op);
+                        if (AssetDatabase.DeleteAsset(op.path))
+                        {
+                            done.Add(op);
+                            touchedDisk = true;
+                        }
                         else errors.Add($"Could not delete {op.path}");
 
                     foreach (var d in plan.deleteFoldersIfEmpty)
-                        if (Directory.Exists(d) && !Directory.EnumerateFileSystemEntries(d).Any() && !AssetDatabase.DeleteAsset(d))
-                            errors.Add($"Could not delete empty folder {d}");
+                    {
+                        if (!Directory.Exists(d) || Directory.EnumerateFileSystemEntries(d).Any()) continue;
+                        if (AssetDatabase.DeleteAsset(d)) touchedDisk = true;
+                        else errors.Add($"Could not delete empty folder {d}");
+                    }
                 }
             }
             finally
