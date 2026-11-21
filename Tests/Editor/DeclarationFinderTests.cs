@@ -35,6 +35,15 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void Find_ReportsPartialModifier()
+        {
+            var r = DeclarationFinder.Find("public sealed partial class P { partial struct S { } } class C { }");
+            Assert.AreEqual("partial class", r["P"]);
+            Assert.AreEqual("partial struct", r["P/S"]);
+            Assert.AreEqual("class", r["C"]);
+        }
+
+        [Test]
         public void Find_SourceEndingInStringPrefix_DoesNotThrow()
         {
             CollectionAssert.AreEquivalent(new[] { "A" }, DeclarationFinder.Find("class A { } @$").Keys);

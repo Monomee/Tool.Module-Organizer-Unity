@@ -61,14 +61,14 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 {
                     if (!a.sourceFiles.Any(p => p.StartsWith("Assets/", StringComparison.Ordinal))) continue;
                     var files = new Dictionary<string, ScriptFile>();
-                    var declared = new List<(TypeRecord rec, string src)>();
+                    var declared = new List<(TypeRecord rec, string src, bool partial)>();
                     foreach (var src in a.sourceFiles.Select(PathRules.Norm))
                     {
                         if (!File.Exists(src)) continue; // deleted since the last compile
                         var f = files[src] = new ScriptFile { guid = AssetDatabase.AssetPathToGUID(src), path = src, kind = kinds[a.name] };
                         result.files[f.guid] = f;
-                        foreach (var name in DeclarationFinder.Find(File.ReadAllText(src)).Keys)
-                            if (Own(name, out var rec)) declared.Add((rec, src));
+                        foreach (var d in DeclarationFinder.Find(File.ReadAllText(src)))
+                            if (Own(d.Key, out var rec)) declared.Add((rec, src, d.Value.StartsWith("partial ", StringComparison.Ordinal)));
                     }
 
                     var types = def.MainModule.GetTypes().ToList();
@@ -84,9 +84,9 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     }
 
                     // The PDB is the authority. Source declarations only place types without sequence points
-                    // (enums, interfaces, delegates, field-only types), so a copy inside an inactive #if adds no file.
-                    // ponytail: a field-only part of a partial type whose other part has methods is not mapped; evaluate #if if that matters.
-                    foreach (var (rec, src) in declared.Where(d => d.rec.filePaths.Count == 0).ToList()) AddPath(rec, src);
+                    // (enums, interfaces, delegates, field-only types) and partial parts (a field-only part has no
+                    // sequence points), so a non-partial copy inside an inactive #if adds no file.
+                    foreach (var (rec, src, _) in declared.Where(d => d.partial || d.rec.filePaths.Count == 0).ToList()) AddPath(rec, src);
 
                     foreach (var rec in result.types.Values.Where(r => r.assemblyName == a.name))
                     foreach (var p in rec.filePaths)

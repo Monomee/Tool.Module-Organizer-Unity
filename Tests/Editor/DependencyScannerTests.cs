@@ -53,6 +53,14 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void FieldOnlyPartialPart_IsMapped()
+        {
+            CollectionAssert.AreEquivalent(
+                new[] { "Assets/_Fixtures/Scope/FxPartialFields.Methods.cs", "Assets/_Fixtures/Scope/FxPartialFields.Fields.cs" },
+                S.types["FxPartialFields"].filePaths);
+        }
+
+        [Test]
         public void LambdaReference_FoldsIntoOuterTypeFile()
         {
             CollectionAssert.Contains(F("Scope/FxA.cs").referencedTypes, "FxLambdaOnly");

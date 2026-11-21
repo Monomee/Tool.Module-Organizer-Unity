@@ -10,13 +10,13 @@ namespace Monome.UtilityPack.ModuleOrganizer
         static readonly Regex Token = new Regex(
             // (?<![@\w]) instead of \b so "@class" used as an identifier is not read as a keyword.
             @"(?<![@\w])namespace\s+(?<ns>@?\w+(?:\s*\.\s*@?\w+)*)" +
-            @"|(?<![@\w])(?<tk>class|struct|interface|enum)\s+@?(?<tn>\w+)\s*(?<ta><[^>]*>)?" +
+            @"|(?<![@\w])(?:(?<pt>partial)\s+)?(?<tk>class|struct|interface|enum)\s+@?(?<tn>\w+)\s*(?<ta><[^>]*>)?" +
             // The return type may be a tuple: "delegate (int a, int b) Handler();"
             @"|(?<![@\w])delegate\s+(?:[^;{}()=]|\([^;{}()=]*\))*?(?<dn>\w+)\s*(?<da><[^>]*>)?\s*\(" +
             @"|(?<open>\{)|(?<close>\})",
             RegexOptions.Compiled);
 
-        // Returns fullName -> kind, using Cecil naming: "Ns.Outer`1/Inner".
+        // Returns fullName -> kind, using Cecil naming: "Ns.Outer`1/Inner". Kind is prefixed "partial " for partial declarations.
         public static Dictionary<string, string> Find(string source)
         {
             var result = new Dictionary<string, string>();
@@ -29,7 +29,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 {
                     if (m.Groups["tn"].Value == "where") continue; // "where T : class where U ..."
                     var name = Arity(m.Groups["tn"].Value, m.Groups["ta"]);
-                    result[FullName(frames, name)] = m.Groups["tk"].Value;
+                    result[FullName(frames, name)] = (m.Groups["pt"].Success ? "partial " : "") + m.Groups["tk"].Value;
                     pending = ('t', name);
                 }
                 else if (m.Groups["dn"].Success)
