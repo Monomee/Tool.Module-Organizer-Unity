@@ -136,6 +136,7 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
                     foreach (var tn in scan.files[e.guid].declaredTypes)
                         rename[tn] = (e.setNamespace.Length == 0 ? "" : e.setNamespace + ".") + Simple(tn);
                 }
+                foreach (var (alias, target) in e.aliases) src = SourceRewriter.AddNamespaceAlias(src, alias, target);
                 foreach (var u in e.addUsings) src = SourceRewriter.AddUsing(src, u);
                 foreach (var u in e.removeUsings) src = SourceRewriter.RemoveUsing(src, u);
                 foreach (var (type, oldNs, oldAsm) in e.movedFrom) src = SourceRewriter.AddMovedFrom(src, type, oldNs, oldAsm);
@@ -600,6 +601,47 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             CollectionAssert.AreEqual(new[] { c, d, "Game.UI.Editor", "Some.Dll" }, ApplyPlanner.ComputeReferences(combat, true, r, cfg));
             var planned = new Dictionary<string, string> { ["UI"] = new string('e', 32) };
             CollectionAssert.Contains(ApplyPlanner.ComputeReferences(combat, false, r, cfg, planned), "GUID:" + new string('e', 32));
+        }
+
+        [Test]
+        public void EditorFile_InModuleEditorNamespace_AliasesTheTypeThatNamespaceShadows()
+        {
+            // In namespace Game.Combat.Editor a plain `Editor` binds to that namespace (CS0118), not to UnityEditor.Editor.
+            Add(S + "Weapon.cs", "w", "Weapon");
+            Add(S + "Editor/WeaponEditor.cs", "e", true, "WeaponEditor", "Weapon", "UnityEditor.Editor");
+            disk.sourceByGuid["e"] = "using UnityEditor;\n\n[CustomEditor(typeof(Weapon))]\npublic class WeaponEditor : Editor {}\n";
+            Add(S + "Editor/Qualified.cs", "q", true, "Qualified", "UnityEditor.Editor");
+            disk.sourceByGuid["q"] = "public class Qualified : UnityEditor.Editor {}\n";
+            Assign("Combat", "w", "e", "q");
+            var p = Plan();
+            CollectionAssert.AreEqual(new[] { ("Editor", "global::UnityEditor.Editor") }, p.edits.Single(x => x.guid == "e").aliases);
+            Assert.IsEmpty(p.edits.Single(x => x.guid == "q").aliases);
+            Assert.IsEmpty(p.edits.Single(x => x.guid == "w").aliases);
+            Execute(p);
+            StringAssert.Contains("namespace Game.Combat.Editor\n{\n    using Editor = global::UnityEditor.Editor;\n\n    [CustomEditor",
+                Source(S + "Combat/Editor/WeaponEditor.cs"));
+            Assert.IsFalse(Plan().edits.Any(x => x.aliases.Count > 0));
+        }
+
+        [Test]
+        public void UsingOfAModuleNamespace_TheFileNoLongerReaches_IsRemoved()
+        {
+            Add(S + "Payload.cs", "p", "Payload");
+            Add(S + "Store.cs", "s", "Store", "Payload");
+            Add(S + "Target.cs", "t", "Target", "Payload");
+            Assign("Alpha", "p", "s");
+            var beta = Assign("Beta", "t");
+            var p = Plan();
+            CollectionAssert.AreEqual(new[] { "Game.Alpha" }, p.edits.Single(x => x.guid == "t").addUsings);
+            Execute(p);
+            // Payload joins Beta: Beta's asmdef stops referencing Alpha, so Target's `using Game.Alpha;` would be CS0234.
+            ModuleEdits.Assign(cfg, scan, new[] { "p" }, beta, Source);
+            p = Plan();
+            CollectionAssert.AreEqual(new[] { "Game.Alpha" }, p.edits.Single(x => x.guid == "t").removeUsings);
+            CollectionAssert.AreEqual(new[] { "Game.Beta" }, p.edits.Single(x => x.guid == "s").addUsings);
+            Assert.IsEmpty(p.edits.Single(x => x.guid == "s").removeUsings);
+            Execute(p);
+            StringAssert.DoesNotContain("using Game.Alpha;", Source(S + "Beta/Target.cs"));
         }
     }
 }

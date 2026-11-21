@@ -163,6 +163,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (SourceRewriter.Parse(text).Rewritable) text = SourceRewriter.SetNamespace(text, op.setNamespace);
                 else errors.Add($"Namespace layout too complex to rewrite: {path}");
             }
+            foreach (var (alias, target) in op.aliases) text = SourceRewriter.AddNamespaceAlias(text, alias, target);
             foreach (var u in op.removeUsings) text = SourceRewriter.RemoveUsing(text, u);
             foreach (var u in op.addUsings) text = SourceRewriter.AddUsing(text, u);
             foreach (var (type, oldNs, oldAsm) in op.movedFrom)

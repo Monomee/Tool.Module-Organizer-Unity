@@ -290,6 +290,23 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return body.Insert(at, text);
         });
 
+        // `using alias = target;` first in the single namespace block, where it binds before the enclosing namespaces'
+        // members (a using at the top of the file binds after them). Unchanged if the block already has that alias.
+        public static string AddNamespaceAlias(string src, string alias, string target) => KeepBom(src, body =>
+        {
+            var s = new Src(body);
+            var info = Parse(s);
+            if (!info.Rewritable || info.IsGlobal || info.close < 0) throw new InvalidOperationException("No single namespace block to put the alias in.");
+            var block = s.mask.Substring(info.open, info.close - info.open);
+            if (Regex.IsMatch(block, @"(?<![\w.@])using\s+@?" + Regex.Escape(alias) + @"\s*=")) return body;
+            var line = "using " + alias + " = " + target + ";";
+            var eol = body.IndexOf('\n', info.open);
+            if (eol < 0 || eol > info.close || s.mask.Substring(info.open + 1, eol - info.open - 1).Trim().Length > 0)
+                return body.Insert(info.open + 1, " " + line); // code right after `{`
+            var at = eol + 1;
+            return body.Insert(at, Indent + line + s.nl + (NextLineBlank(body, at) ? "" : s.nl));
+        });
+
         static bool NextLineBlank(string src, int at)
         {
             var n = src.IndexOf('\n', at);

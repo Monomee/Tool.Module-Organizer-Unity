@@ -652,6 +652,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (e.setNamespace != null) parts.Add("namespace → " + (e.setNamespace.Length == 0 ? "(global)" : e.setNamespace));
                 parts.AddRange(e.addUsings.Select(u => "+using " + u));
                 parts.AddRange(e.removeUsings.Select(u => "-using " + u));
+                parts.AddRange(e.aliases.Select(x => $"+using {x.alias} = {x.target}"));
                 parts.AddRange(e.movedFrom.Select(x => $"[MovedFrom {x.oldNs}] on {x.type}"));
                 return Line($"{PathOf(e.guid)}: {string.Join(", ", parts)}");
             });

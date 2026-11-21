@@ -245,21 +245,21 @@ namespace Monome.UtilityPack.ModuleOrganizer
 
         internal static string Outer(string typeName) => typeName.Split('/')[0];
 
-        static string NsOf(string fullName) => fullName.Contains('.') ? fullName.Substring(0, fullName.LastIndexOf('.')) : "";
+        internal static string NsOf(string fullName) => fullName.Contains('.') ? fullName.Substring(0, fullName.LastIndexOf('.')) : "";
 
         static readonly Regex IdentRx = new Regex(@"(?<![\w@])(?<!(?:\.|::)\s*)@?([\p{L}_]\w*)", RegexOptions.Compiled);
         static readonly Regex AliasRx = new Regex(@"(?<![\w@.])using\s+@?([\p{L}_]\w*)\s*=", RegexOptions.Compiled);
 
         // Identifiers the code writes unqualified (not right after `.` or `::`), minus using aliases, which bind before
         // imported namespaces. Comments, literals and preprocessor lines are masked; every #if branch is kept.
-        static HashSet<string> UnqualifiedNames(string src)
+        internal static HashSet<string> UnqualifiedNames(string src)
         {
             var mask = DeclarationFinder.Strip(src, null, new bool[src.Length]);
             var aliases = new HashSet<string>(AliasRx.Matches(mask).Cast<Match>().Select(m => m.Groups[1].Value));
             return new HashSet<string>(IdentRx.Matches(mask).Cast<Match>().Select(m => m.Groups[1].Value).Where(n => !aliases.Contains(n)));
         }
 
-        static string SimpleName(string fullName) => fullName.Substring(fullName.LastIndexOf('.') + 1); // keeps `1: Box`1 != Box
+        internal static string SimpleName(string fullName) => fullName.Substring(fullName.LastIndexOf('.') + 1); // keeps `1: Box`1 != Box
 
         static string StripArity(string name) => name.Split('`')[0];
 

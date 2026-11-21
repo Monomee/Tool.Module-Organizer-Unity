@@ -34,6 +34,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public string setNamespace; // null = unchanged, "" = back to global
         public List<string> addUsings = new List<string>();
         public List<string> removeUsings = new List<string>();
+        public List<(string alias, string target)> aliases = new List<(string, string)>(); // inside the namespace block (FileFates.ShadowAliases)
         public List<(string type, string oldNs, string oldAsm)> movedFrom = new List<(string, string, string)>(); // type = simple name, Cecil arity kept
     }
 
@@ -102,6 +103,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var cleanup = new HashSet<string>();
             var roots = new HashSet<string>(cfg.scopeFolders.Select(PathRules.Norm).Append(PathRules.Norm(cfg.EffectiveModulesRoot)));
+            List<(string ns, string node)> finalNodes = null; // top-level types after Apply: namespace, module node (null = no module)
 
             foreach (var f in files)
             {
@@ -124,6 +126,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 var op = new TextEditOp { guid = f.guid };
                 if (fates.Changes(f, out _, out var newNs)) op.setNamespace = newNs;
                 (op.addUsings, op.removeUsings) = fates.Usings(f);
+                op.removeUsings = op.removeUsings.Union(UnreachableUsings(f)).OrderBy(n => n, StringComparer.Ordinal).ToList();
+                op.aliases = fates.ShadowAliases(f);
                 var asm = fates.TargetAssembly(f);
                 foreach (var t in serializableByFirstFile[f.path].OrderBy(t => t.fullName, StringComparer.Ordinal))
                 {
@@ -134,7 +138,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     var className = oldNs.Length == 0 ? t.fullName : t.fullName.Substring(oldNs.Length + 1);
                     plan.reserializeTypeKeys.Add(oldNs + "|" + t.assemblyName + "|" + className);
                 }
-                if (op.setNamespace != null || op.addUsings.Count + op.removeUsings.Count + op.movedFrom.Count > 0) plan.edits.Add(op);
+                if (op.setNamespace != null || op.addUsings.Count + op.removeUsings.Count + op.aliases.Count + op.movedFrom.Count > 0) plan.edits.Add(op);
             }
 
             // GUIDs first, so every asmdef can reference every other by GUID.
@@ -201,6 +205,36 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 }
                 Need(Dir(op.path));
                 plan.asmdefs.Add(op);
+            }
+
+            // `using N;` in a module file whose namespace, after Apply, only lives in modules its asmdef will not reference
+            // (the type it used from there moved away): CS0234. Namespaces with any type outside modules are kept.
+            List<string> UnreachableUsings(ScriptFile f)
+            {
+                var m = fates.ModuleOf(f);
+                if (m == null) return new List<string>(); // Assembly-CSharp(-Editor) sees every auto-referenced asmdef
+                var node = Node(m, f.IsEditor);
+                var visible = new HashSet<string>(report.edges.Where(e => e.from == node).Select(e => e.to)) { node };
+                if (f.IsEditor) visible.Add(m.name);
+                var extra = m.extraReferences.Concat(f.IsEditor ? m.editorExtraReferences : new List<string>()).Select(NormRef).ToList();
+                foreach (var x in cfg.modules)
+                foreach (var ed in new[] { false, true })
+                {
+                    var g = ed ? x.editorAsmdefGuid : x.asmdefGuid;
+                    if (extra.Contains(PathRules.AsmdefName(x, ed)) || (!string.IsNullOrEmpty(g) && extra.Contains("GUID:" + g))) visible.Add(Node(x, ed));
+                }
+                finalNodes ??= scan.types.Values.Where(t => !t.fullName.Contains('/')).Select(t =>
+                {
+                    var tf = t.filePaths.Count > 0 ? fates.FileAt(t.filePaths[0]) : null;
+                    var tm = tf == null ? null : fates.ModuleOf(tf);
+                    return (ns: moved.TryGetValue(t.fullName, out var mv) ? mv.newNs : t.ns ?? "", node: tm == null ? null : Node(tm, tf.IsEditor));
+                }).ToList();
+                var enclosing = fates.Enclosing(f);
+                return fates.FileUsings(f).Where(n => !enclosing.Contains(n)).Where(n =>
+                {
+                    var holders = finalNodes.Where(t => t.ns == n || t.ns.StartsWith(n + ".", StringComparison.Ordinal)).Select(t => t.node).ToList();
+                    return holders.Count > 0 && holders.All(h => h != null && !visible.Contains(h));
+                }).ToList();
             }
 
             string CurrentPath(string guid) => disk.pathByGuid.TryGetValue(guid, out var p) ? p : null;

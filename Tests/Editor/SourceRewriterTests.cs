@@ -295,5 +295,17 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         public void FindUsings_PlainDirectives_HeaderAndNamespaceLevel() =>
             CollectionAssert.AreEquivalent(new[] { "Game.Combat", "System", "Inner" },
                 SourceRewriter.FindUsings("using Game . Combat;\nusing static Foo.Bar;\nusing A = B.C;\n#if X\nusing System;\n#endif\nnamespace N\n{\n    using Inner;\n}\n"));
+
+        [Test]
+        public void AddNamespaceAlias_FirstInTheBlock_Idempotent()
+        {
+            const string a = "using Editor = global::UnityEditor.Editor;";
+            var src = "using UnityEditor;\r\n\r\nnamespace G.Editor\r\n{ // x\r\n    class E : Editor {}\r\n}\r\n";
+            var r = SourceRewriter.AddNamespaceAlias(src, "Editor", "global::UnityEditor.Editor");
+            Assert.AreEqual("using UnityEditor;\r\n\r\nnamespace G.Editor\r\n{ // x\r\n    " + a + "\r\n\r\n    class E : Editor {}\r\n}\r\n", r);
+            Assert.AreEqual(r, SourceRewriter.AddNamespaceAlias(r, "Editor", "global::UnityEditor.Editor"));
+            Assert.AreEqual("namespace N { " + a + " class E {} }", SourceRewriter.AddNamespaceAlias("namespace N { class E {} }", "Editor", "global::UnityEditor.Editor"));
+            Assert.Throws<System.InvalidOperationException>(() => SourceRewriter.AddNamespaceAlias("class E {}\n", "Editor", "global::UnityEditor.Editor"));
+        }
     }
 }
