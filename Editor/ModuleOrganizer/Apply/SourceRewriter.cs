@@ -328,8 +328,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
         }
 
         // Puts [MovedFrom] above every declaration of the type (each #if/#else variant), on its own line above the
-        // attributes and modifiers, or inline when the declaration shares a line with other code. Declarations that
-        // already carry MovedFrom are left alone. typeSimpleName may carry a Cecil arity ("Box`2").
+        // attributes and modifiers, or inline when the declaration shares a line with other code. A MovedFrom already
+        // on a declaration (from an earlier Apply) is repointed at the given source instead: one per type. typeSimpleName may carry a Cecil arity ("Box`2").
         // Returns false (result = src) when the file declares no such type.
         // ponytail: two nested types with the same simple name in one file both get annotated.
         public static bool TryAddMovedFrom(string src, string typeSimpleName, string oldNs, string oldAssembly, out string result)
@@ -344,6 +344,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
             var decls = Regex.Matches(s.mask, @"(?<![@\w])(?:class|struct|interface|enum)\s+@?" + Regex.Escape(name) + @"(?!\w)")
                 .Cast<Match>().Where(m => Arity(s.mask, m.Index + m.Length) == arity).ToList();
             bool Has(int kw) { var st = DeclStart(s.mask, kw, true); return MovedFromRx.IsMatch(s.mask.Substring(st, kw - st)); }
+            var repointed = Repoint(s, decls, attr.Substring(1, attr.Length - 2));
+            if (repointed != body) return TryAddMovedFrom((body.Length < src.Length ? Bom : "") + repointed, typeSimpleName, oldNs, oldAssembly, out result);
             bool IsPartial(int kw) { var st = DeclStart(s.mask, kw, false); return PartialRx.IsMatch(s.mask.Substring(st, kw - st)); }
             // Non-partial declarations are #if alternatives: each gets one. Partial parts are one type, so exactly one
             // part per preprocessor configuration may carry it (else CS0579): a part is annotated only when it is
@@ -380,6 +382,48 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
             result = decls.Count == 0 ? src : (body.Length < src.Length ? Bom : "") + sb;
             return decls.Count > 0;
+        }
+
+        // Replaces each existing `[Ns.]MovedFrom[Attribute](...)` on the declarations with `call`.
+        static string Repoint(Src s, List<Match> decls, string call)
+        {
+            var spans = new SortedSet<(int start, int end)>();
+            foreach (var d in decls)
+            {
+                var st = DeclStart(s.mask, d.Index, true);
+                foreach (Match a in MovedFromRx.Matches(s.mask.Substring(st, d.Index - st)))
+                {
+                    var b = st + a.Index;
+                    while (b > 0 && (char.IsLetterOrDigit(s.mask[b - 1]) || s.mask[b - 1] == '_' || s.mask[b - 1] == '.')) b--;
+                    var e = st + a.Index + a.Length;
+                    var q = e;
+                    while (q < s.mask.Length && char.IsWhiteSpace(s.mask[q])) q++;
+                    if (q < s.mask.Length && s.mask[q] == '(')
+                        for (var depth = 0; q < s.mask.Length; q++)
+                        {
+                            if (s.mask[q] == '(') depth++;
+                            else if (s.mask[q] == ')' && --depth == 0) { e = q + 1; break; }
+                        }
+                    spans.Add((b, e));
+                }
+            }
+            var sb = new StringBuilder(s.text);
+            foreach (var (b, e) in spans.Reverse()) sb.Remove(b, e - b).Insert(b, call);
+            return sb.ToString();
+        }
+
+        static readonly Regex PlainUsingRx = new Regex(@"(?<![\w.@])using\s+(?!static\b)(@?\w+(?:\s*\.\s*@?\w+)*)\s*;", RegexOptions.Compiled);
+
+        // Namespaces of the file's top-level `using Ns;` directives (not `using static`, not aliases), #if branches included.
+        public static List<string> FindUsings(string src)
+        {
+            var s = new Src(NoBom(src ?? ""));
+            var list = new List<string>();
+            for (var i = 0; i < s.top.Count; i++)
+                if (s.top[i].kind == Kind.Using)
+                    foreach (Match m in PlainUsingRx.Matches(s.MaskLine(i)))
+                        list.Add(Regex.Replace(m.Groups[1].Value, @"[@\s]", ""));
+            return list.Distinct().ToList();
         }
 
         // Number of type parameters in a `<...>` right after offset i (0 when there is none). Only top-level commas

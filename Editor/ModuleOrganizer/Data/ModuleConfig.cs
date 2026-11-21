@@ -92,6 +92,9 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return string.Join("/", parts.Where(s => s.Length > 0));
         }
 
+        // Assembly (and asmdef file) name of a module's runtime or Editor asmdef.
+        public static string AsmdefName(Module m, bool editor) => m.namespaceName + (editor ? ".Editor" : "");
+
         public static string TargetNamespace(Module m, string relativeDir, bool isEditor)
         {
             var ns = m.namespaceName + (isEditor ? ".Editor" : "");

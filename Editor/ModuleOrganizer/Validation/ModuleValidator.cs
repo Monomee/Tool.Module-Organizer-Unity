@@ -31,8 +31,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             var r = new ValidationReport();
             var files = scan.files.Values.OrderBy(f => f.path, StringComparer.Ordinal).ToList();
             var sources = new Dictionary<string, string>();
-            var nsInfo = new Dictionary<string, NamespaceInfo>();
-            var fates = new FileFates(cfg, scan, f => FileFates.CurrentNamespace(Info(f)));
+            var fates = new FileFates(cfg, scan, Source);
             foreach (var (e, first, second) in fates.duplicates)
             {
                 var p = scan.files.TryGetValue(e.guid, out var df) ? df.path : e.guid;
@@ -55,7 +54,12 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (!editable)
                 {
                     if (f.kind is AssemblyKind.Runtime or AssemblyKind.Editor or AssemblyKind.FirstPass or AssemblyKind.FirstPassEditor)
+                    {
                         CheckReverseRefs(f);
+                        foreach (var ns in fates.GoneNamespaces().Count == 0 ? new List<string>() : fates.FileUsings(f).Where(fates.GoneNamespaces().Contains))
+                            Add(Severity.Error, IssueCode.ReverseRefOutOfScope, f.path,
+                                $"{f.path} (outside scope) has 'using {ns};', but Apply leaves no type in {ns}. Add the file's folder to the scope or remove the using.");
+                    }
                     continue;
                 }
                 if (module != null && module.rewriteNamespace && !Info(f).Rewritable)
@@ -146,11 +150,10 @@ namespace Monome.UtilityPack.ModuleOrganizer
             foreach (var f in files.Where(f => IsAssignable(f, cfg)))
             {
                 // A `using` Apply adds must not make a name F already resolves elsewhere ambiguous (CS0104).
-                var enclosing = new HashSet<string>((Changes(f, out _, out var ownNs) ? new List<string> { ownNs } : Info(f).namespaces)
-                    .SelectMany(Prefixes)) { "" };
+                var enclosing = fates.Enclosing(f);
                 // Nested refs count as their outer type, even when Cecil registered no record for it (System.Environment/SpecialFolder).
                 var refs = f.referencedTypes.Where(scan.types.ContainsKey).Select(Outer).Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList();
-                var added = new HashSet<string>(refs.Where(moved.ContainsKey).Select(n => moved[n].newNs).Where(n => !enclosing.Contains(n)));
+                var added = new HashSet<string>(fates.Usings(f).add);
                 var unqualified = added.Count == 0 ? null : UnqualifiedNames(Source(f));
                 foreach (var rn in added.Count == 0 ? new List<string>() : refs)
                 {
@@ -203,11 +206,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 return s;
             }
 
-            NamespaceInfo Info(ScriptFile f)
-            {
-                if (!nsInfo.TryGetValue(f.path, out var i)) i = nsInfo[f.path] = SourceRewriter.Parse(Source(f));
-                return i;
-            }
+            NamespaceInfo Info(ScriptFile f) => fates.Info(f);
 
             string FinalNs(ScriptFile f, TypeRecord t) => Changes(f, out _, out var n) ? n : t.ns ?? "";
 

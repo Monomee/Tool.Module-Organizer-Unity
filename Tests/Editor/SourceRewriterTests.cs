@@ -269,5 +269,27 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             var src = "// \"X, Assembly-CSharp\"\nclass A {\n  string t = \"Game.Gun, Assembly-CSharp\";\n  string u = @\"x\n  Y, Assembly-CSharp-firstpass\";\n}";
             CollectionAssert.AreEqual(new[] { 3, 5 }, SourceRewriter.FindAssemblyQualifiedStrings(src));
         }
+
+        // --- task 7 fix round 1 ---
+
+        [Test]
+        public void AddMovedFrom_ExistingMovedFrom_IsRepointed()
+        {
+            const string old = "[UnityEngine.Scripting.APIUpdating.MovedFrom(false, sourceNamespace: \"\", sourceAssembly: \"Assembly-CSharp\")]";
+            const string now = "[UnityEngine.Scripting.APIUpdating.MovedFrom(false, sourceNamespace: \"Game.Combat\", sourceAssembly: \"Game.Combat\")]";
+            var src = "namespace Game.Gear\n{\n    " + old + "\n    [System.Serializable] public class P {}\n}\n";
+            var r = SourceRewriter.AddMovedFrom(src, "P", "Game.Combat", "Game.Combat");
+            Assert.AreEqual("namespace Game.Gear\n{\n    " + now + "\n    [System.Serializable] public class P {}\n}\n", r);
+            Assert.AreEqual(r, SourceRewriter.AddMovedFrom(r, "P", "Game.Combat", "Game.Combat"));
+            // Short form, on the partial part that carries it: still one per type.
+            var partial = "using UnityEngine.Scripting.APIUpdating;\n[MovedFrom(true, \"Old\")] partial class P {}\npartial class P {}\n";
+            Assert.AreEqual("using UnityEngine.Scripting.APIUpdating;\n" + MF + " partial class P {}\npartial class P {}\n",
+                SourceRewriter.AddMovedFrom(partial, "P", "", "A"));
+        }
+
+        [Test]
+        public void FindUsings_PlainTopLevelOnly() =>
+            CollectionAssert.AreEquivalent(new[] { "Game.Combat", "System" },
+                SourceRewriter.FindUsings("using Game . Combat;\nusing static Foo.Bar;\nusing A = B.C;\n#if X\nusing System;\n#endif\nnamespace N\n{\n    using Inner;\n}\n"));
     }
 }
