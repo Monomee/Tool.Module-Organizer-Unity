@@ -119,6 +119,9 @@ namespace Monome.UtilityPack.ModuleOrganizer
             var m = MovedTypes();
             var remaining = new HashSet<string>(scan.types.Values.SelectMany(t =>
                 ModuleValidator.Prefixes(m.TryGetValue(ModuleValidator.Outer(t.fullName), out var mv) ? mv.newNs : t.ns ?? "")));
+            // Referenced types the scan has no record of (BCL/engine/DLL, pseudo-attributes): their namespaces stay.
+            remaining.UnionWith(scan.files.Values.SelectMany(f => f.referencedTypes).Where(n => !scan.types.ContainsKey(n))
+                .SelectMany(n => ModuleValidator.Prefixes(ModuleValidator.NsOf(ModuleValidator.Outer(n)))));
             return gone = new HashSet<string>(m.Values.Select(v => v.oldNs).Where(n => n.Length > 0 && !remaining.Contains(n)));
         }
 

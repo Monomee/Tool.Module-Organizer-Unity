@@ -85,6 +85,39 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.IsFalse(S.types["FxB"].serializableNonUnityObject);
         }
 
+        [Test]
+        public void InlinedConstAndEnumValue_AreReferencedFromSource()
+        {
+            var refs = F("Scope/FxConstUser.cs").referencedTypes;
+            CollectionAssert.Contains(refs, "FxConstSource");
+            CollectionAssert.Contains(refs, "FxMode");
+            CollectionAssert.DoesNotContain(refs, "FxConstUser");
+        }
+
+        [Test]
+        public void PseudoAttribute_IsReferenced()
+        {
+            CollectionAssert.Contains(F("Scope/FxConstUser.cs").referencedTypes, "System.Runtime.CompilerServices.MethodImplAttribute");
+            CollectionAssert.Contains(F("Scope/FxData.cs").referencedTypes, "System.SerializableAttribute");
+        }
+
+        [Test]
+        public void InternalTypeAndMember_AreInternalRefs()
+        {
+            CollectionAssert.AreEquivalent(new[] { "FxHidden", "FxInternalMember" }, F("Scope/FxConstUser.cs").internalRefs);
+            CollectionAssert.IsEmpty(F("Scope/FxA.cs").internalRefs);
+        }
+
+        [Test]
+        public void TypeInTwoAssetsAssemblies_IsDuplicate_AndAssembliesAreListed()
+        {
+            CollectionAssert.AreEquivalent(new[] { "Assets/_Fixtures/Twins/A/FxTwin.cs", "Assets/_Fixtures/Twins/B/FxTwin.cs" }, S.duplicateTypes["FxTwin"]);
+            Assert.AreEqual(S.types["FxTwin"].assemblyName, "Assembly-CSharp");
+            Assert.AreEqual("", S.assemblies["Assembly-CSharp"]);
+            Assert.IsFalse(string.IsNullOrEmpty(S.assemblies["Fx.Twins"]));
+            Assert.AreEqual("Assembly-CSharp", F("Scope/FxA.cs").assemblyName);
+        }
+
         static string Meta(params (string first, int enabled)[] entries) =>
             "PluginImporter:\n  isExplicitlyReferenced: 0\n  platformData:\n" + string.Concat(entries.Select(e =>
                 "  - first:\n      " + e.first + "\n    second:\n      enabled: " + e.enabled + "\n      settings:\n        CPU: AnyCPU\n"));

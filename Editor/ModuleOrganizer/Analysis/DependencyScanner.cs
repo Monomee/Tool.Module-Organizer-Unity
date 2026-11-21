@@ -29,6 +29,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 resolver.AddSearchDirectory(dir);
 
             var loaded = new List<(Assembly asm, AssemblyDefinition def)>();
+            var assetsAsms = new HashSet<string>(asms.Where(x => x.sourceFiles.Any(p => p.StartsWith("Assets/", StringComparison.Ordinal))).Select(x => x.name));
             try
             {
                 foreach (var a in asms)
@@ -38,19 +39,28 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     else UnityEngine.Debug.LogWarning($"[ModuleOrganizer] Scan skipped {a.name}: {dll} not found.");
                 }
 
-                // Pass 1: every type declared by a script assembly.
+                // Pass 1: every type declared by a script assembly. A full name two script assemblies declare keeps the
+                // record of one with sources under Assets/ (the scan's file analysis covers only those).
                 var asmdefGuids = new Dictionary<string, string>();
+                var duplicates = new HashSet<string>();
                 foreach (var (a, def) in loaded)
                 {
                     var kind = kinds[a.name];
                     var asmdefPath = kind == AssemblyKind.AsmDef ? CompilationPipeline.GetAssemblyDefinitionFilePathFromAssemblyName(a.name) : null;
                     var asmdefGuid = asmdefGuids[a.name] = asmdefPath != null ? AssetDatabase.AssetPathToGUID(asmdefPath) : null;
+                    result.assemblies[a.name] = asmdefGuid ?? "";
                     var notAuto = asmdefPath != null && File.Exists(asmdefPath) &&
                                   System.Text.RegularExpressions.Regex.IsMatch(File.ReadAllText(asmdefPath), @"""autoReferenced""\s*:\s*false");
                     var editorOnly = kind == AssemblyKind.AsmDef && a.flags.HasFlag(AssemblyFlags.EditorAssembly);
                     foreach (var t in def.MainModule.GetTypes())
                     {
                         if (t.FullName.Contains('<')) continue;
+                        if (result.types.TryGetValue(t.FullName, out var prev))
+                        {
+                            // Only both under Assets/ is ambiguous; an internal polyfill also in a package is legal and harmless.
+                            if (!t.IsNested && InAssets(prev.assemblyName) && InAssets(a.name)) duplicates.Add(t.FullName);
+                            if (InAssets(prev.assemblyName) || !InAssets(a.name)) continue;
+                        }
                         result.types[t.FullName] = new TypeRecord
                         {
                             fullName = t.FullName, ns = Outermost(t).Namespace, assemblyName = a.name, kind = kind,
@@ -60,23 +70,35 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     }
                 }
 
+                foreach (var a in asms) if (!result.assemblies.ContainsKey(a.name)) result.assemblies[a.name] = "";
+                foreach (var p in CompilationPipeline.GetPrecompiledAssemblyPaths(CompilationPipeline.PrecompiledAssemblySources.All))
+                    if (!result.assemblies.ContainsKey(Path.GetFileNameWithoutExtension(p))) result.assemblies[Path.GetFileNameWithoutExtension(p)] = "";
+
                 // Pass 2: files, type -> file mapping, references.
+                var scanned = new List<(Assembly a, Dictionary<string, ScriptFile> files, Dictionary<string, string> texts)>();
                 foreach (var (a, def) in loaded)
                 {
-                    if (!a.sourceFiles.Any(p => p.StartsWith("Assets/", StringComparison.Ordinal))) continue;
+                    if (!InAssets(a.name)) continue;
                     var files = new Dictionary<string, ScriptFile>();
+                    var texts = new Dictionary<string, string>();
                     foreach (var src in a.sourceFiles.Select(PathRules.Norm))
                     {
                         if (!File.Exists(src)) continue; // deleted since the last compile
                         var f = files[src] = new ScriptFile
                         {
                             guid = AssetDatabase.AssetPathToGUID(src), path = src, kind = kinds[a.name], asmdefGuid = asmdefGuids[a.name],
-                            editorOnlyAssembly = kinds[a.name] == AssemblyKind.AsmDef && a.flags.HasFlag(AssemblyFlags.EditorAssembly),
+                            assemblyName = a.name, editorOnlyAssembly = kinds[a.name] == AssemblyKind.AsmDef && a.flags.HasFlag(AssemblyFlags.EditorAssembly),
                         };
                         result.files[f.guid] = f;
                         // Evaluated with the assembly's defines, so declarations in inactive #if branches add no file.
-                        foreach (var name in DeclarationFinder.Find(File.ReadAllText(src), a.defines).Keys)
+                        var text = texts[src] = File.ReadAllText(src);
+                        foreach (var name in DeclarationFinder.Find(text, a.defines).Keys)
+                        {
                             if (Own(name, out var rec)) AddPath(rec, src);
+                            if (!duplicates.Contains(name)) continue;
+                            if (!result.duplicateTypes.TryGetValue(name, out var where)) where = result.duplicateTypes[name] = new List<string>();
+                            if (!where.Contains(src)) where.Add(src);
+                        }
                     }
 
                     var types = def.MainModule.GetTypes().ToList();
@@ -100,13 +122,24 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     {
                         if (!Own(Outermost(t).FullName, out var outer) || outer.filePaths.Count == 0) continue;
                         var refs = new HashSet<string>();
-                        Collect(t, refs);
-                        foreach (var p in outer.filePaths) files[p].referencedTypes.UnionWith(refs);
+                        var internals = new HashSet<string>();
+                        Collect(t, refs, internals);
+                        foreach (var p in outer.filePaths)
+                        {
+                            files[p].referencedTypes.UnionWith(refs);
+                            files[p].internalRefs.UnionWith(internals);
+                        }
                     }
-                    foreach (var f in files.Values) f.referencedTypes.ExceptWith(f.declaredTypes);
+                    scanned.Add((a, files, texts));
 
                     bool Own(string name, out TypeRecord rec) =>
                         result.types.TryGetValue(name, out rec) && rec.assemblyName == a.name;
+                }
+                // Once every type knows its files.
+                foreach (var (a, files, texts) in scanned)
+                {
+                    InlinedTypes(a, files, texts);
+                    foreach (var f in files.Values) f.referencedTypes.ExceptWith(f.declaredTypes);
                 }
             }
             finally
@@ -116,8 +149,54 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
             return result;
 
-            void Collect(TypeDefinition t, HashSet<string> refs)
+            bool InAssets(string asmName) => assetsAsms.Contains(asmName);
+
+            bool IsScript(string typeName) => result.types.TryGetValue(typeName, out var r) && r.kind != AssemblyKind.Engine && r.kind != AssemblyKind.Precompiled;
+
+            // Constants and enum values are inlined: `B.Value` leaves no trace in IL. From source (comments and strings
+            // masked), a `Name.` whose Name is the simple name of exactly one script type this file can resolve (own
+            // namespace or an enclosing one, or a using) in an assembly a.name sees adds that type. Precision over recall.
+            void InlinedTypes(Assembly a, Dictionary<string, ScriptFile> files, Dictionary<string, string> texts)
             {
+                var visible = new HashSet<string>(a.assemblyReferences.Select(r => r.name)) { a.name };
+                var byName = result.types.Values.Where(r => !r.fullName.Contains('/') && !r.fullName.Contains('`') && r.filePaths.Count > 0 &&
+                                                            visible.Contains(r.assemblyName))
+                    .ToLookup(r => r.fullName.Substring(r.fullName.LastIndexOf('.') + 1));
+                foreach (var f in files.Values)
+                {
+                    var text = texts[f.path];
+                    var resolvable = new HashSet<string>(SourceRewriter.Parse(text).namespaces.SelectMany(ModuleValidator.Prefixes)) { "" };
+                    resolvable.UnionWith(SourceRewriter.FindUsings(text));
+                    var mask = DeclarationFinder.Strip(text, a.defines);
+                    foreach (var name in MemberAccessRx.Matches(mask).Cast<System.Text.RegularExpressions.Match>().Select(m => m.Groups[1].Value).Distinct())
+                    {
+                        var hits = byName[name].Where(r => resolvable.Contains(r.ns ?? "")).Take(2).ToList();
+                        if (hits.Count == 1) f.referencedTypes.Add(hits[0].fullName);
+                    }
+                }
+            }
+
+            void Collect(TypeDefinition t, HashSet<string> refs, HashSet<string> internals)
+            {
+                // Pseudo-attributes compile to metadata flags, not attributes: keep their namespaces in view (a `using`
+                // of them must not look unused).
+                if (t.IsSerializable && !t.Name.Contains('<')) refs.Add("System.SerializableAttribute"); // closures are [Serializable] too
+                if (t.IsExplicitLayout || t.HasLayoutInfo) refs.Add("System.Runtime.InteropServices.StructLayoutAttribute");
+                foreach (var f in t.Fields)
+                {
+                    if (f.IsNotSerialized) refs.Add("System.NonSerializedAttribute");
+                    if (f.HasLayoutInfo) refs.Add("System.Runtime.InteropServices.FieldOffsetAttribute");
+                }
+                foreach (var m in t.Methods)
+                {
+                    // 0x0200 = AggressiveOptimization (not in Cecil's enum)
+                    if ((m.ImplAttributes & (MethodImplAttributes.NoInlining | MethodImplAttributes.AggressiveInlining | MethodImplAttributes.NoOptimization |
+                                             MethodImplAttributes.Synchronized | (MethodImplAttributes)0x0200)) != 0)
+                        refs.Add("System.Runtime.CompilerServices.MethodImplAttribute");
+                    if (m.IsPInvokeImpl) refs.Add("System.Runtime.InteropServices.DllImportAttribute");
+                }
+                var members = new HashSet<string>();
+                var self = Outermost(t).FullName; // its own internals are always in reach
                 Add(t.BaseType);
                 foreach (var i in t.Interfaces) Add(i.InterfaceType);
                 Attrs(t);
@@ -140,8 +219,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         switch (ins.Operand)
                         {
                             case TypeReference tr: Add(tr); break;
-                            case MethodReference mr: Signature(mr); break;
-                            case FieldReference fr: Add(fr.DeclaringType); Add(fr.FieldType); break;
+                            case MethodReference mr: Signature(mr); Member(mr); break;
+                            case FieldReference fr: Add(fr.DeclaringType); Add(fr.FieldType); Member(fr); break;
                         }
                     }
                 }
@@ -152,6 +231,19 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     Add(mr.ReturnType);
                     foreach (var p in mr.Parameters) Add(p.ParameterType);
                     if (mr is GenericInstanceMethod gim) foreach (var g in gim.GenericArguments) Add(g);
+                }
+
+                // An internal / private protected member (property and event accessors are methods) of a script type.
+                void Member(MemberReference mr)
+                {
+                    if (mr.DeclaringType == null || mr.Name.Contains('<')) return; // compiler-generated (lambdas, iterators)
+                    var outer = Outermost(mr.DeclaringType.GetElementType()).FullName;
+                    if (outer == self || outer.Contains('<') || !IsScript(outer) || !members.Add(mr.FullName)) return;
+                    IMemberDefinition d;
+                    try { d = mr.Resolve(); }
+                    catch (AssemblyResolutionException) { return; }
+                    if (d is MethodDefinition md ? md.IsAssembly || md.IsFamilyAndAssembly : d is FieldDefinition fd && (fd.IsAssembly || fd.IsFamilyAndAssembly))
+                        internals.Add(outer);
                 }
 
                 void GenericParams(IGenericParameterProvider g)
@@ -197,7 +289,14 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     }
                     if (tr == null || tr is GenericParameter) return;
                     var name = tr.FullName;
-                    if (name.Contains('<') || !refs.Add(name) || result.types.ContainsKey(name)) return;
+                    if (name.Contains('<') || !refs.Add(name)) return;
+                    if (!result.types.ContainsKey(name)) Register(tr, name);
+                    var top = Outermost(tr).FullName;
+                    if (top != self && IsScript(name) && !PublicChain(tr)) internals.Add(top);
+                }
+
+                void Register(TypeReference tr, string name)
+                {
                     var outer = Outermost(tr);
                     var asmName = outer.Scope is ModuleDefinition md ? md.Assembly.Name.Name : outer.Scope?.Name;
                     var rec = result.types[name] = new TypeRecord
@@ -214,6 +313,20 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     }
                 }
             }
+        }
+
+        static readonly System.Text.RegularExpressions.Regex MemberAccessRx = new System.Text.RegularExpressions.Regex(
+            @"(?<![\w@.])(?<!\.\s+)@?([\p{L}_]\w*)\s*\.(?![.\d])", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        // Not visible outside its assembly: the type or one of its declaring types is internal / private / private protected.
+        static bool PublicChain(TypeReference tr)
+        {
+            TypeDefinition d;
+            try { d = tr.Resolve(); }
+            catch (AssemblyResolutionException) { return true; }
+            for (; d != null; d = d.DeclaringType)
+                if (d.IsNested ? !(d.IsNestedPublic || d.IsNestedFamily || d.IsNestedFamilyOrAssembly) : !d.IsPublic) return false;
+            return true;
         }
 
         static AssemblyKind KindOf(string assemblyName)
