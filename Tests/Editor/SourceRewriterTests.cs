@@ -124,6 +124,80 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.AreEqual("class Outer { [UnityEngine.Scripting.APIUpdating.MovedFrom(false, sourceNamespace: \"\", sourceAssembly: \"A\")] class P {} }", inline);
         }
 
+        // --- fix round 1 regressions ---
+
+        const string MF = "[UnityEngine.Scripting.APIUpdating.MovedFrom(false, sourceNamespace: \"\", sourceAssembly: \"A\")]";
+
+        [Test]
+        public void AddMovedFrom_AnnotatesEveryConditionalDeclaration()
+        {
+            var src = "#if UNITY_EDITOR\npublic class P { int a; }\n#else\npublic class P { }\n#endif\n";
+            var r = SourceRewriter.AddMovedFrom(src, "P", "", "A");
+            Assert.AreEqual("#if UNITY_EDITOR\n" + MF + "\npublic class P { int a; }\n#else\n" + MF + "\npublic class P { }\n#endif\n", r);
+            Assert.AreEqual(r, SourceRewriter.AddMovedFrom(r, "P", "", "A"));
+        }
+
+        [Test]
+        public void AddMovedFrom_MultilineModifiers_AndDirectiveBetweenExisting()
+        {
+            Assert.AreEqual("namespace N\n{\n    " + MF + "\n    public\n    sealed class P {}\n}\n",
+                SourceRewriter.AddMovedFrom("namespace N\n{\n    public\n    sealed class P {}\n}\n", "P", "", "A"));
+            var has = MF + "\n#if X\n[Foo]\n#endif\nclass P {}\n";
+            Assert.AreEqual(has, SourceRewriter.AddMovedFrom(has, "P", "", "A"));
+        }
+
+        [Test]
+        public void TryAddMovedFrom_ReportsMissingType_AndMatchesCecilArity()
+        {
+            Assert.IsFalse(SourceRewriter.TryAddMovedFrom("class Q {}", "P", "", "A", out var none));
+            Assert.AreEqual("class Q {}", none);
+            Assert.IsTrue(SourceRewriter.TryAddMovedFrom("class Box {}\nclass Box<T, U> {}\n", "Box`2", "", "A", out var r));
+            Assert.AreEqual("class Box {}\n" + MF + "\nclass Box<T, U> {}\n", r);
+            Assert.IsTrue(SourceRewriter.TryAddMovedFrom(r, "Box`2", "", "A", out var again), "found but already present");
+            Assert.AreEqual(r, again);
+        }
+
+        [Test]
+        public void AddUsing_ConditionalUsingDoesNotSatisfy_RegionUsingDoes()
+        {
+            Assert.AreEqual("#if UNITY_EDITOR\nusing Game.Combat;\n#endif\nusing Game.Combat;\nclass X { Gun g; }\n",
+                SourceRewriter.AddUsing("#if UNITY_EDITOR\nusing Game.Combat;\n#endif\nclass X { Gun g; }\n", "Game.Combat"));
+            var region = "#region U\nusing G;\n#endregion\nclass X {}\n";
+            Assert.AreEqual(region, SourceRewriter.AddUsing(region, "G"));
+        }
+
+        [Test]
+        public void GlobalAttributes_UsingGoesBefore_WrapKeepsMultilineOutside()
+        {
+            Assert.AreEqual("using G;\n\n[assembly: Foo]\nclass X {}\n", SourceRewriter.AddUsing("[assembly: Foo]\nclass X {}\n", "G"));
+            Assert.AreEqual("using A;\nusing G;\n[assembly: Foo]\nclass X {}\n", SourceRewriter.AddUsing("using A;\n[assembly: Foo]\nclass X {}\n", "G"));
+            Assert.AreEqual("using A;\n[assembly: Foo(\n    \"x\")]\nnamespace N\n{\n    class B {}\n}\n",
+                SourceRewriter.SetNamespace("using A;\n[assembly: Foo(\n    \"x\")]\nclass B {}\n", "N"));
+        }
+
+        [Test]
+        public void Unwrap_KeepsMissingTrailingNewline() =>
+            Assert.AreEqual("class A {}", SourceRewriter.SetNamespace("namespace N\n{\n    class A {}\n}", ""));
+
+        [Test]
+        public void Bom_IsKeptAtStart()
+        {
+            const string bom = "﻿";
+            Assert.AreEqual(bom + "using A;\nusing G;\nclass X {}\n", SourceRewriter.AddUsing(bom + "using A;\nclass X {}\n", "G"));
+            Assert.AreEqual(bom + "class X {}\n", SourceRewriter.RemoveUsing(bom + "using G;\nclass X {}\n", "G"));
+            Assert.AreEqual(bom + "namespace N\n{\n    class A {}\n}\n", SourceRewriter.SetNamespace(bom + "class A {}\n", "N"));
+            Assert.AreEqual(bom + MF + "\nclass P {}", SourceRewriter.AddMovedFrom(bom + "class P {}", "P", "", "A"));
+        }
+
+        [Test]
+        public void Wrap_DoesNotSplitRegion() =>
+            Assert.AreEqual("using A;\nnamespace N\n{\n    #region Types\n    class B {}\n    #endregion\n}\n",
+                SourceRewriter.SetNamespace("using A;\n#region Types\nclass B {}\n#endregion\n", "N"));
+
+        [Test]
+        public void FindQualifiedUses_EmptyNamespace_ReturnsNothing() =>
+            CollectionAssert.IsEmpty(SourceRewriter.FindQualifiedUses("class X { Gun g; }", "", new[] { "Gun" }));
+
         [Test]
         public void FindQualifiedUses_IgnoresCommentsStringsAndNearMisses()
         {

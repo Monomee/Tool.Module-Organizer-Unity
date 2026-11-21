@@ -19,18 +19,22 @@ namespace Monome.UtilityPack.ModuleOrganizer
 
     // Text-level edits of .cs files. All searches run on DeclarationFinder.Strip's mask (comments and literals blanked,
     // same offsets, every #if branch kept) and edits are applied to the original text at the same offsets.
+    // A leading BOM is set aside and put back at position 0.
     public static class SourceRewriter
     {
         const string Indent = "    ";
+        const string Bom = "﻿";
         static readonly Regex NsRx = new Regex(@"(?<![@\w])namespace\s+(?<n>@?\w+(?:\s*\.\s*@?\w+)*)|(?<o>\{)|(?<c>\})", RegexOptions.Compiled);
         static readonly Regex UsingRx = new Regex(@"^(?:using\s+(?!var\b)[^;(]+;\s*)+$", RegexOptions.Compiled);
         static readonly Regex ExternRx = new Regex(@"^extern\s+alias\s+\w+\s*;$", RegexOptions.Compiled);
-        static readonly Regex GlobalAttrRx = new Regex(@"^\[\s*(?:assembly|module)\s*:.*\]$", RegexOptions.Compiled);
+        static readonly Regex GlobalAttrRx = new Regex(@"^\[\s*(?:assembly|module)\s*:", RegexOptions.Compiled);
         static readonly Regex DirectiveRx = new Regex(@"^\s*#\s*(\w*)", RegexOptions.Compiled);
-        static readonly Regex ModifiersRx = new Regex(
-            @"(?<![\w@])(?:\[[^\[\]]*\]\s*|(?:public|internal|protected|private|sealed|abstract|static|partial|unsafe|new|readonly|ref)\s+)*$",
-            RegexOptions.Compiled);
+        static readonly Regex MovedFromRx = new Regex(@"\bMovedFrom(?:Attribute)?\b", RegexOptions.Compiled);
         static readonly Regex AsmQualifiedRx = new Regex(@",\s*Assembly-CSharp", RegexOptions.Compiled);
+        static readonly HashSet<string> Modifiers = new HashSet<string>
+        {
+            "public", "internal", "protected", "private", "sealed", "abstract", "static", "partial", "unsafe", "new", "readonly", "ref"
+        };
 
         enum Kind { Blank, Comment, Using, Extern, Attr, Directive }
 
@@ -39,9 +43,10 @@ namespace Monome.UtilityPack.ModuleOrganizer
             public readonly string text, mask, nl;
             public readonly bool[] cov; // char lies inside a comment or literal
             public readonly List<(int start, int end, int next)> lines = new List<(int, int, int)>(); // end excludes \r\n
-            // The leading lines before the first code line. depth = #if nesting after the line;
-            // clean = the line break is real code, not inside a multi-line comment or verbatim string.
-            public readonly List<(Kind kind, string dir, int depth, bool clean)> top = new List<(Kind, string, int, bool)>();
+            // The leading lines before the first code line. depth = #if + #region nesting after the line, ifDepth = #if only;
+            // clean = the line break is a real one: not inside a multi-line comment, verbatim string or global attribute.
+            public readonly List<(Kind kind, string dir, int depth, int ifDepth, bool clean)> top =
+                new List<(Kind, string, int, int, bool)>();
 
             public Src(string s)
             {
@@ -59,25 +64,34 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     lines.Add((i, e, next));
                     i = next;
                 }
-                var depth = 0;
+                int ifDepth = 0, regionDepth = 0, attrOpen = 0;
                 for (var i = 0; i < lines.Count; i++)
                 {
                     var m = MaskLine(i).Trim();
                     string dir = null;
                     Kind k;
-                    if (m.Length == 0) k = Line(i).Trim().Length == 0 ? Kind.Blank : Kind.Comment;
+                    if (attrOpen > 0 || GlobalAttrRx.IsMatch(m)) // [assembly: ...], possibly over several lines
+                    {
+                        attrOpen += m.Count(ch => ch == '[') - m.Count(ch => ch == ']');
+                        if (attrOpen <= 0 && !m.EndsWith("]")) break; // code after the attribute on the same line
+                        attrOpen = Math.Max(attrOpen, 0);
+                        k = Kind.Attr;
+                    }
+                    else if (m.Length == 0) k = Line(i).Trim().Length == 0 ? Kind.Blank : Kind.Comment;
                     else if (m[0] == '#')
                     {
                         k = Kind.Directive;
                         dir = DirectiveRx.Match(Line(i)).Groups[1].Value;
-                        if (dir == "if") depth++;
-                        else if (dir == "endif") depth--;
+                        if (dir == "if") ifDepth++;
+                        else if (dir == "endif") ifDepth--;
+                        else if (dir == "region") regionDepth++;
+                        else if (dir == "endregion") regionDepth--;
                     }
                     else if (UsingRx.IsMatch(m)) k = Kind.Using;
                     else if (ExternRx.IsMatch(m)) k = Kind.Extern;
-                    else if (GlobalAttrRx.IsMatch(m)) k = Kind.Attr;
                     else break;
-                    top.Add((k, dir, depth, lines[i].next > lines[i].end && !cov[lines[i].next - 1]));
+                    var clean = lines[i].next > lines[i].end && !cov[lines[i].next - 1] && attrOpen == 0;
+                    top.Add((k, dir, ifDepth + regionDepth, ifDepth, clean));
                 }
             }
 
@@ -95,18 +109,24 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 return i;
             }
 
-            // First line after the file header (usings, directives, global attributes and blank lines between them);
-            // never inside an open #if or a multi-line comment. Comments directly above code stay with the code.
-            public int HeaderEnd()
+            // First line after the file header (usings, directives, global attributes and blank lines between them),
+            // looking only at the first `limit` top lines; never inside an open #if/#region or a multi-line comment.
+            // Comments directly above code stay with the code.
+            public int HeaderEnd(int limit)
             {
                 var h = 0;
-                for (var i = 0; i < top.Count; i++)
+                for (var i = 0; i < Math.Min(limit, top.Count); i++)
                     if (top[i].kind != Kind.Comment && Boundary(i)) h = i + 1;
                 return h;
             }
         }
 
-        public static NamespaceInfo Parse(string src) => Parse(new Src(src));
+        static string KeepBom(string src, Func<string, string> edit) =>
+            src.StartsWith(Bom, StringComparison.Ordinal) ? Bom + edit(src.Substring(1)) : edit(src);
+
+        static string NoBom(string src) => src.StartsWith(Bom, StringComparison.Ordinal) ? src.Substring(1) : src;
+
+        public static NamespaceInfo Parse(string src) => Parse(new Src(NoBom(src)));
 
         static NamespaceInfo Parse(Src s)
         {
@@ -149,19 +169,21 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return true;
         }
 
-        public static string SetNamespace(string src, string newNs)
+        public static string SetNamespace(string src, string newNs) => KeepBom(src, body =>
         {
-            var s = new Src(src);
+            var s = new Src(body);
             var info = Parse(s);
             if (!info.Rewritable) throw new InvalidOperationException("Namespace layout is too complex to rewrite safely.");
-            if (info.IsGlobal) return newNs.Length == 0 ? src : Wrap(s, newNs);
-            if (newNs.Length > 0) return src.Substring(0, info.nameStart) + newNs + src.Substring(info.nameEnd);
+            if (info.IsGlobal) return newNs.Length == 0 ? body : Wrap(s, newNs);
+            if (newNs.Length > 0) return body.Substring(0, info.nameStart) + newNs + body.Substring(info.nameEnd);
             return Unwrap(s, info);
-        }
+        });
+
+        static bool EndsWithNewline(string t) => t.Length == 0 || t[t.Length - 1] == '\n';
 
         static string Wrap(Src s, string ns)
         {
-            var h = s.HeaderEnd();
+            var h = s.HeaderEnd(s.top.Count);
             var sb = new StringBuilder(s.text, 0, s.After(h - 1), s.text.Length + 64);
             sb.Append("namespace ").Append(ns).Append(s.nl).Append('{').Append(s.nl);
             for (var i = h; i < s.lines.Count; i++)
@@ -169,7 +191,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (!s.StartsInSpan(i) && s.Line(i).Trim().Length > 0) sb.Append(Indent);
                 sb.Append(s.text, s.lines[i].start, s.lines[i].next - s.lines[i].start);
             }
-            var endsNl = s.text.Length == 0 || s.text[s.text.Length - 1] == '\n';
+            var endsNl = EndsWithNewline(s.text);
             if (!endsNl) sb.Append(s.nl);
             sb.Append('}');
             if (endsNl) sb.Append(s.nl);
@@ -202,40 +224,45 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 sb.Append(t, p, end - p);
                 p = end;
             }
-            return sb.Append(t, d, t.Length - d).ToString();
+            var r = sb.Append(t, d, t.Length - d).ToString();
+            if (!EndsWithNewline(t) && r.EndsWith("\n")) r = r.Substring(0, r.Length - (r.EndsWith("\r\n") ? 2 : 1));
+            return r;
         }
 
-        public static string AddUsing(string src, string ns)
+        public static string AddUsing(string src, string ns) => KeepBom(src, body =>
         {
-            var s = new Src(src);
+            var s = new Src(body);
             var rx = UsingOf(ns);
+            var limit = s.top.FindIndex(t => t.kind == Kind.Attr); // usings must precede global attributes
+            if (limit < 0) limit = s.top.Count;
             var anchor = -1;
             var hasUsing = false;
-            for (var i = 0; i < s.top.Count; i++)
+            for (var i = 0; i < limit; i++)
             {
                 var k = s.top[i];
                 if (k.kind == Kind.Using)
                 {
-                    if (rx.IsMatch(s.MaskLine(i))) return src;
+                    // A using under #if does not count: the type would be missing in the other configuration.
+                    if (k.ifDepth == 0 && rx.IsMatch(s.MaskLine(i))) return body;
                     hasUsing = true;
                 }
                 if (k.kind == Kind.Using || k.kind == Kind.Extern || k.dir == "define" || k.dir == "undef") anchor = i;
             }
             int at;
-            if (anchor < 0) at = s.After(s.HeaderEnd() - 1);
+            if (anchor < 0) at = s.After(s.HeaderEnd(limit) - 1);
             else
             {
-                // After the anchor, but outside any #if it sits in; fall back to the last safe line before it.
+                // After the anchor, but outside any #if/#region it sits in; fall back to the last safe line before it.
                 var j = anchor;
-                while (j < s.top.Count && !s.Boundary(j)) j++;
-                if (j == s.top.Count)
+                while (j < limit && !s.Boundary(j)) j++;
+                if (j == limit)
                     for (j = anchor - 1; j >= 0 && !s.Boundary(j); j--) { }
                 at = s.After(j);
             }
             var text = "using " + ns + ";" + s.nl;
-            if (!hasUsing && !NextLineBlank(src, at)) text += s.nl;
-            return src.Insert(at, text);
-        }
+            if (!hasUsing && !NextLineBlank(body, at)) text += s.nl;
+            return body.Insert(at, text);
+        });
 
         static bool NextLineBlank(string src, int at)
         {
@@ -243,11 +270,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return string.IsNullOrWhiteSpace(src.Substring(at, (n < 0 ? src.Length : n) - at));
         }
 
-        public static string RemoveUsing(string src, string ns)
+        public static string RemoveUsing(string src, string ns) => KeepBom(src, body =>
         {
-            var s = new Src(src);
+            var s = new Src(body);
             var rx = UsingOf(ns);
-            var sb = new StringBuilder(src);
+            var sb = new StringBuilder(body);
             for (var i = s.top.Count - 1; i >= 0; i--) // backwards so earlier offsets stay valid
             {
                 if (s.top[i].kind != Kind.Using) continue;
@@ -261,55 +288,106 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     for (var k = hits.Count - 1; k >= 0; k--) sb.Remove(l.start + hits[k].Index, hits[k].Length);
             }
             return sb.ToString();
-        }
+        });
 
         // `using Ns;` exactly: not `using static Ns;`, `using A = Ns;` or `using Ns.Sub;`.
         static Regex UsingOf(string ns) => new Regex(@"(?<![\w.@])using\s+" + NsPattern(ns) + @"\s*;");
 
         static string NsPattern(string ns) => string.Join(@"\s*\.\s*", ns.Split('.').Select(p => "@?" + Regex.Escape(p)));
 
-        // Puts [MovedFrom] directly above the type's attribute lines (or inline before its modifiers when the
-        // declaration shares a line with other code). No-op when the type is not found or already has MovedFrom.
         public static string AddMovedFrom(string src, string typeSimpleName, string oldNs, string oldAssembly)
         {
-            var s = new Src(src);
-            var m = Regex.Match(s.mask, @"(?<![@\w])(?:class|struct|interface|enum)\s+@?" + Regex.Escape(typeSimpleName) + @"(?!\w)");
-            if (!m.Success) return src;
-            var attr = "[UnityEngine.Scripting.APIUpdating.MovedFrom(false, sourceNamespace: \"" + oldNs +
-                       "\", sourceAssembly: \"" + oldAssembly + "\")]";
-            var li = s.LineOf(m.Index);
-            var lineStart = s.lines[li].start;
-            var mods = ModifiersRx.Match(s.mask.Substring(lineStart, m.Index - lineStart));
-            int at;
-            string insert;
-            if (s.mask.Substring(lineStart, mods.Index).Trim().Length == 0 && !s.StartsInSpan(li))
-            {
-                var t = li;
-                while (t > 0 && !s.StartsInSpan(t - 1) && IsAttributeLine(s.MaskLine(t - 1))) t--;
-                at = s.lines[t].start;
-                var line = s.Line(t);
-                insert = line.Substring(0, line.Length - line.TrimStart(' ', '\t').Length) + attr + s.nl;
-            }
-            else
-            {
-                at = lineStart + mods.Index;
-                insert = attr + " ";
-            }
-            if (Regex.IsMatch(s.mask.Substring(at, m.Index - at), @"\bMovedFrom(?:Attribute)?\b")) return src;
-            return src.Insert(at, insert);
+            TryAddMovedFrom(src, typeSimpleName, oldNs, oldAssembly, out var result);
+            return result;
         }
 
-        static bool IsAttributeLine(string maskLine)
+        // Puts [MovedFrom] above every declaration of the type (each #if/#else variant), on its own line above the
+        // attributes and modifiers, or inline when the declaration shares a line with other code. Declarations that
+        // already carry MovedFrom are left alone. typeSimpleName may carry a Cecil arity ("Box`2").
+        // Returns false (result = src) when the file declares no such type.
+        // ponytail: two nested types with the same simple name in one file both get annotated.
+        public static bool TryAddMovedFrom(string src, string typeSimpleName, string oldNs, string oldAssembly, out string result)
         {
-            var t = maskLine.Trim();
-            return t.StartsWith("[") && t.EndsWith("]");
+            var body = NoBom(src);
+            var tick = typeSimpleName.IndexOf('`');
+            var name = tick < 0 ? typeSimpleName : typeSimpleName.Substring(0, tick);
+            var arity = tick < 0 ? 0 : int.Parse(typeSimpleName.Substring(tick + 1));
+            var s = new Src(body);
+            var attr = "[UnityEngine.Scripting.APIUpdating.MovedFrom(false, sourceNamespace: \"" + oldNs +
+                       "\", sourceAssembly: \"" + oldAssembly + "\")]";
+            var decls = Regex.Matches(s.mask, @"(?<![@\w])(?:class|struct|interface|enum)\s+@?" + Regex.Escape(name) + @"(?!\w)")
+                .Cast<Match>().Where(m => Arity(s.mask, m.Index + m.Length) == arity).ToList();
+            var sb = new StringBuilder(body);
+            for (var d = decls.Count - 1; d >= 0; d--) // backwards so earlier offsets stay valid
+            {
+                var kw = decls[d].Index;
+                if (MovedFromRx.IsMatch(s.mask.Substring(DeclStart(s.mask, kw, true), kw - DeclStart(s.mask, kw, true)))) continue;
+                var p = DeclStart(s.mask, kw, false);
+                var li = s.LineOf(p);
+                var ls = s.lines[li].start;
+                if (s.mask.Substring(ls, p - ls).Trim().Length == 0 && !s.StartsInSpan(li))
+                {
+                    var line = s.Line(li);
+                    sb.Insert(ls, line.Substring(0, line.Length - line.TrimStart(' ', '\t').Length) + attr + s.nl);
+                }
+                else sb.Insert(p, attr + " ");
+            }
+            result = decls.Count == 0 ? src : (body.Length < src.Length ? Bom : "") + sb;
+            return decls.Count > 0;
+        }
+
+        // Number of type parameters in a `<...>` right after offset i (0 when there is none).
+        static int Arity(string mask, int i)
+        {
+            while (i < mask.Length && char.IsWhiteSpace(mask[i])) i++;
+            if (i >= mask.Length || mask[i] != '<') return 0;
+            int depth = 0, commas = 0;
+            for (; i < mask.Length; i++)
+            {
+                if (mask[i] == '<') depth++;
+                else if (mask[i] == '>' && --depth == 0) break;
+                else if (mask[i] == ',' && depth == 1) commas++;
+            }
+            return commas + 1;
+        }
+
+        // Start of the declaration whose keyword is at p: walks back over whitespace, modifiers and [attributes]
+        // (and over preprocessor lines when crossDirectives, used to spot an existing MovedFrom).
+        static int DeclStart(string mask, int p, bool crossDirectives)
+        {
+            bool Ident(char ch) => char.IsLetterOrDigit(ch) || ch == '_';
+            while (true)
+            {
+                var q = p;
+                while (q > 0 && (char.IsWhiteSpace(mask[q - 1]) || (crossDirectives && mask[q - 1] == '#'))) q--;
+                if (q > 0 && mask[q - 1] == ']')
+                {
+                    int k = q - 1, depth = 0;
+                    for (; k >= 0; k--)
+                    {
+                        if (mask[k] == ']') depth++;
+                        else if (mask[k] == '[' && --depth == 0) break;
+                    }
+                    if (k < 0 || (k > 0 && Ident(mask[k - 1]))) return p; // unbalanced, or an indexer / array type
+                    p = k;
+                    continue;
+                }
+                var w = q;
+                while (w > 0 && Ident(mask[w - 1])) w--;
+                if (w < q && Modifiers.Contains(mask.Substring(w, q - w)) && (w == 0 || (mask[w - 1] != '@' && mask[w - 1] != '.')))
+                {
+                    p = w;
+                    continue;
+                }
+                return p;
+            }
         }
 
         // 1-based lines of `ns.Type` in code (not comments/strings), for the given simple type names.
         public static List<int> FindQualifiedUses(string src, string ns, IEnumerable<string> typeSimpleNames)
         {
             var names = string.Join("|", typeSimpleNames.Select(Regex.Escape));
-            if (names.Length == 0) return new List<int>();
+            if (names.Length == 0 || ns.Length == 0) return new List<int>();
             var s = new Src(src);
             var rx = new Regex(@"(?<![\w.@])" + NsPattern(ns) + @"\s*\.\s*@?(?:" + names + @")(?!\w)");
             return LineNumbers(s, rx.Matches(s.mask).Cast<Match>().Select(m => m.Index));
