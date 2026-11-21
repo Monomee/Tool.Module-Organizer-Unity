@@ -182,7 +182,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 var name = PathRules.AsmdefName(m, editor);
                 var op = new AsmdefOp
                 {
-                    path = PathRules.Norm(m.folder) + (editor ? "/Editor/" : "/") + name + ".asmdef", guid = guid, name = name, rootNamespace = name,
+                    path = PathRules.AsmdefPath(m, editor), guid = guid, name = name, rootNamespace = name,
                     editorOnly = editor, references = ComputeReferences(m, editor, report, cfg, planned), moduleName = m.name,
                 };
                 if (string.Equals(cur, op.path, StringComparison.Ordinal))
