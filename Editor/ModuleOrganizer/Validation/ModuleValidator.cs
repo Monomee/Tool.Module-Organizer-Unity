@@ -30,25 +30,14 @@ namespace Monome.UtilityPack.ModuleOrganizer
         {
             var r = new ValidationReport();
             var files = scan.files.Values.OrderBy(f => f.path, StringComparer.Ordinal).ToList();
-            var byPath = new Dictionary<string, ScriptFile>();
-            foreach (var f in files) byPath[f.path] = f;
-            var assigned = new Dictionary<string, (Module module, ScriptEntry entry)>();
-            foreach (var m in cfg.modules)
-            foreach (var e in m.scripts)
-            {
-                if (!assigned.TryGetValue(e.guid, out var first))
-                {
-                    assigned[e.guid] = (m, e);
-                    continue;
-                }
-                var p = scan.files.TryGetValue(e.guid, out var df) ? df.path : e.guid;
-                Add(Severity.Error, IssueCode.DuplicateAssignment, p, $"{p} is assigned to both {first.module.name} and {m.name}.");
-            }
-            var pending = new Dictionary<string, ScriptEntry>();
-            foreach (var e in cfg.pendingRemovals)
-                if (!assigned.ContainsKey(e.guid)) pending[e.guid] = e;
             var sources = new Dictionary<string, string>();
             var nsInfo = new Dictionary<string, NamespaceInfo>();
+            var fates = new FileFates(cfg, scan, f => FileFates.CurrentNamespace(Info(f)));
+            foreach (var (e, first, second) in fates.duplicates)
+            {
+                var p = scan.files.TryGetValue(e.guid, out var df) ? df.path : e.guid;
+                Add(Severity.Error, IssueCode.DuplicateAssignment, p, $"{p} is assigned to both {first.name} and {second.name}.");
+            }
             var edges = new Dictionary<(string, string), ModuleEdge>();
             var edgeTypes = new Dictionary<(string, string, string), string>(); // (from, to, path) -> first type used
 
@@ -100,7 +89,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         case RefClass.UnassignedInScope:
                             Add(Severity.Error, IssueCode.UnassignedInScopeRef, f.path,
                                 $"{f.path} ({module.name}) uses {tn} from {where}, which is not assigned to a module" +
-                                (pending.ContainsKey(tf.guid) ? " (it is being removed from its module)" : "") + "; assign it too.");
+                                (fates.pending.ContainsKey(tf.guid) ? " (it is being removed from its module)" : "") + "; assign it too.");
                             break;
                         case RefClass.OutOfScope:
                             Add(Severity.Error, IssueCode.OutOfScopeRef, f.path,
@@ -134,12 +123,12 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
 
             // Namespace of every type after Apply; two different types landing on the same name clash.
-            var moved = new Dictionary<string, (string oldNs, string newNs)>();
+            var moved = fates.MovedTypes();
             var finals = new Dictionary<string, FinalType>();
             foreach (var t in topLevel)
             {
                 var tf = t.filePaths.Count > 0 ? FileAt(t.filePaths[0]) : null;
-                var changed = tf != null && Changes(tf, out var oldNs, out var newNs) && moved.TryAdd(t.fullName, (oldNs, newNs));
+                var changed = moved.ContainsKey(t.fullName);
                 finals[t.fullName] = new FinalType
                 {
                     fullName = t.fullName, ns = changed ? moved[t.fullName].newNs : t.ns ?? "", where = tf?.path ?? t.assemblyName, changed = changed,
@@ -200,11 +189,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
             return r;
 
-            ScriptFile FileAt(string path) => byPath.TryGetValue(PathRules.Norm(path), out var f) ? f : null;
+            ScriptFile FileAt(string path) => fates.FileAt(path);
 
-            Module ModuleOfGuid(string guid) => assigned.TryGetValue(guid, out var a) ? a.module : null;
+            Module ModuleOfGuid(string guid) => fates.ModuleOf(guid);
 
-            Module ModuleOf(ScriptFile f) => ModuleOfGuid(f.guid);
+            Module ModuleOf(ScriptFile f) => fates.ModuleOf(f);
 
             string Node(ScriptFile f) => ModuleOf(f).name + (f.IsEditor ? ".Editor" : "");
 
@@ -222,26 +211,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
 
             string FinalNs(ScriptFile f, TypeRecord t) => Changes(f, out _, out var n) ? n : t.ns ?? "";
 
-            // Whether Apply will change this file's namespace: to the module's target namespace, or back to
-            // originalNamespace for a pending removal. Files it cannot rewrite keep theirs.
-            bool Changes(ScriptFile f, out string oldNs, out string newNs)
-            {
-                oldNs = newNs = null;
-                if (!IsAssignable(f, cfg)) return false;
-                string target;
-                if (assigned.TryGetValue(f.guid, out var a))
-                {
-                    if (!a.module.rewriteNamespace) return false;
-                    var original = string.IsNullOrEmpty(a.entry.originalPath) ? f.path : a.entry.originalPath;
-                    target = PathRules.TargetNamespace(a.module, PathRules.ScopeRelativeDir(original, cfg.scopeFolders), f.IsEditor);
-                }
-                else if (pending.TryGetValue(f.guid, out var p) && p.originalNamespace != null) target = p.originalNamespace;
-                else return false;
-                if (!Info(f).Rewritable) return false;
-                oldNs = Info(f).IsGlobal ? "" : Info(f).namespaces[0];
-                newNs = target;
-                return newNs != oldNs;
-            }
+            bool Changes(ScriptFile f, out string oldNs, out string newNs) => fates.Changes(f, out oldNs, out newNs);
 
             // Apply never edits files outside scope, so they must keep compiling with the moved types' new namespaces.
             void CheckReverseRefs(ScriptFile f)
@@ -274,7 +244,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 r.issues.Add(new Issue { severity = severity, code = code, path = path, message = message });
         }
 
-        static string Outer(string typeName) => typeName.Split('/')[0];
+        internal static string Outer(string typeName) => typeName.Split('/')[0];
 
         static string NsOf(string fullName) => fullName.Contains('.') ? fullName.Substring(0, fullName.LastIndexOf('.')) : "";
 
@@ -295,7 +265,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         static string StripArity(string name) => name.Split('`')[0];
 
         // "A.B.C" -> "A.B.C", "A.B", "A"
-        static IEnumerable<string> Prefixes(string ns)
+        internal static IEnumerable<string> Prefixes(string ns)
         {
             for (var n = ns; !string.IsNullOrEmpty(n); n = n.Contains('.') ? n.Substring(0, n.LastIndexOf('.')) : "")
                 yield return n;

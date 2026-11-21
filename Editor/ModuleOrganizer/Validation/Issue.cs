@@ -8,7 +8,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
     public enum IssueCode
     {
         Cycle, OutOfScopeRef, UnassignedInScopeRef, NonAutoDll, PartialSplit, RuntimeToEditor, NameClash,
-        ReverseRefOutOfScope, RestoreConflict, QualifiedName, MultiNamespace, AssemblyQualifiedString, DuplicateAssignment,
+        ReverseRefOutOfScope, RestoreConflict, QualifiedName, MultiNamespace, AssemblyQualifiedString, DuplicateAssignment, PathConflict,
     }
 
     public class Issue
