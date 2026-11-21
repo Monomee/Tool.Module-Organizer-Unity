@@ -232,7 +232,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
         }
 
         // References of a module's runtime or Editor asmdef: modules its files use (by GUID: the module's, else the one
-        // planned for it, else by asmdef name), outside asmdefs, extraReferences, and for Editor its own runtime asmdef.
+        // planned for it, else by asmdef name), outside asmdefs, extraReferences, and for Editor editorExtraReferences and
+        // its own runtime asmdef.
         // Raw 32-hex GUIDs become "GUID:...". Sorted, distinct.
         public static List<string> ComputeReferences(Module m, bool editor, ValidationReport report, ModuleConfig cfg,
             IReadOnlyDictionary<string, string> plannedGuidByNode = null)
@@ -248,6 +249,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
             if (report.asmdefRefs.TryGetValue(node, out var outside)) refs.AddRange(outside.Select(NormRef));
             refs.AddRange(m.extraReferences.Select(NormRef));
+            if (editor) refs.AddRange(m.editorExtraReferences.Select(NormRef));
             if (editor) refs.Add(Ref(m, false));
             return refs.Where(r => !string.IsNullOrEmpty(r)).Distinct().OrderBy(r => r, StringComparer.Ordinal).ToList();
 
@@ -259,7 +261,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
         }
 
-        static string NormRef(string r) => r != null && GuidRx.IsMatch(r) ? "GUID:" + r : r;
+        internal static string NormRef(string r) => r != null && GuidRx.IsMatch(r) ? "GUID:" + r : r;
 
         static string Node(Module m, bool editor) => m.name + (editor ? ".Editor" : "");
 

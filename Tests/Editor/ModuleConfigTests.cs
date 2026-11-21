@@ -48,5 +48,19 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.AreEqual("Game.Combat.Editor.Weapons", PathRules.TargetNamespace(m, "Weapons", true));
             Assert.AreEqual("Game.Combat", PathRules.TargetNamespace(m, "", false));
         }
+
+        [Test]
+        public void FileAlreadyInModuleFolder_KeepsItsPlace_NoDoubledFolder()
+        {
+            var m = new Module { name = "Combat", namespaceName = "Game.Combat", folder = "Assets/_Scripts/Combat" };
+            var scope = new[] { "Assets/_Scripts" };
+            var e = new ScriptEntry { originalPath = "Assets/_Scripts/Combat/Sub/Damage.cs" };
+            Assert.AreEqual("Sub", PathRules.RelativeDir(m, e.originalPath, scope));
+            Assert.AreEqual("Assets/_Scripts/Combat/Sub/Damage.cs", PathRules.TargetPath(m, e, false, scope));
+            Assert.AreEqual("Game.Combat.Sub", PathRules.TargetNamespace(m, PathRules.RelativeDir(m, e.originalPath, scope), false));
+            var ed = new ScriptEntry { originalPath = "Assets/_Scripts/Combat/Editor/Sub/DamageEditor.cs" };
+            Assert.AreEqual("Assets/_Scripts/Combat/Editor/Sub/DamageEditor.cs", PathRules.TargetPath(m, ed, true, scope));
+            Assert.AreEqual("Weapons", PathRules.RelativeDir(m, "Assets/_Scripts/Weapons/Gun.cs", scope), "outside the module: scope-relative");
+        }
     }
 }

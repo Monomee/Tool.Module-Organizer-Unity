@@ -24,7 +24,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public string description;
         public bool rewriteNamespace = true;
         public List<ScriptEntry> scripts = new List<ScriptEntry>();
-        public List<string> extraReferences = new List<string>();
+        public List<string> extraReferences = new List<string>(); // runtime and Editor asmdefs
+        public List<string> editorExtraReferences = new List<string>(); // Editor asmdef only
         public string asmdefGuid;
         public string editorAsmdefGuid;
     }
@@ -77,9 +78,21 @@ namespace Monome.UtilityPack.ModuleOrganizer
         {
             var path = Norm(originalPath);
             var scope = scopeFolders.Where(f => IsUnder(path, f)).OrderByDescending(f => Norm(f).Length).FirstOrDefault();
-            if (scope == null) return "";
+            return scope == null ? "" : DirUnder(path, Norm(scope));
+        }
+
+        // Subfolder a file keeps inside its module: relative to the module folder when it already lives there
+        // (no doubled "Combat/Combat"), else relative to its scope folder. Editor segments stripped.
+        public static string RelativeDir(Module m, string originalPath, IReadOnlyList<string> scopeFolders)
+        {
+            var path = Norm(originalPath);
+            return IsUnder(path, m.folder) ? DirUnder(path, Norm(m.folder)) : ScopeRelativeDir(path, scopeFolders);
+        }
+
+        static string DirUnder(string path, string root)
+        {
             var dir = path.Substring(0, Math.Max(path.LastIndexOf('/'), 0));
-            var rel = dir.Length > Norm(scope).Length ? dir.Substring(Norm(scope).Length + 1) : "";
+            var rel = dir.Length > root.Length ? dir.Substring(root.Length + 1) : "";
             return string.Join("/", rel.Split('/').Where(s => s.Length > 0 && s != "Editor"));
         }
 
@@ -87,7 +100,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         {
             var parts = new List<string> { Norm(m.folder) };
             if (isEditor) parts.Add("Editor");
-            parts.Add(ScopeRelativeDir(e.originalPath, scopeFolders));
+            parts.Add(RelativeDir(m, e.originalPath, scopeFolders));
             parts.Add(Norm(e.originalPath).Split('/').Last());
             return string.Join("/", parts.Where(s => s.Length > 0));
         }

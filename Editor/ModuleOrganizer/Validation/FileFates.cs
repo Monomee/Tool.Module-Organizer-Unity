@@ -87,7 +87,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             if (assigned.TryGetValue(f.guid, out var a))
             {
                 if (!a.module.rewriteNamespace) return false;
-                target = PathRules.TargetNamespace(a.module, PathRules.ScopeRelativeDir(Original(f, a.entry), cfg.scopeFolders), f.IsEditor);
+                target = PathRules.TargetNamespace(a.module, PathRules.RelativeDir(a.module, Original(f, a.entry), cfg.scopeFolders), f.IsEditor);
             }
             else if (pending.TryGetValue(f.guid, out var p) && p.originalNamespace != null) target = p.originalNamespace;
             else return false;

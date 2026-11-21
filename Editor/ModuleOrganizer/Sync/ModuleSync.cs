@@ -90,8 +90,13 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public static List<DriftItem> Diff(ModuleConfig cfg, DiskSnapshot disk, ValidationReport report)
         {
             var items = new List<DriftItem>();
-            var assigned = new HashSet<string>(cfg.modules.SelectMany(m => m.scripts).Concat(cfg.pendingRemovals).Select(e => e.guid));
-            foreach (var m in cfg.modules.Where(m => !string.IsNullOrEmpty(m.asmdefGuid)))
+            var applied = cfg.modules.Where(m => !string.IsNullOrEmpty(m.asmdefGuid)).ToList();
+            // A file moved out of its module counts as unassigned, so the module it moved into reports it as added.
+            var movedOut = new HashSet<string>(applied.SelectMany(m => m.scripts.Where(e => e.applied &&
+                disk.scriptPathByGuid.TryGetValue(e.guid, out var p) && !InModule(m, disk, p)).Select(e => e.guid)));
+            var assigned = new HashSet<string>(cfg.modules.SelectMany(m => m.scripts).Concat(cfg.pendingRemovals).Select(e => e.guid)
+                .Where(g => !movedOut.Contains(g)));
+            foreach (var m in applied)
             {
                 Asmdef(m, false, m.asmdefGuid);
                 if (!string.IsNullOrEmpty(m.editorAsmdefGuid)) Asmdef(m, true, m.editorAsmdefGuid);
@@ -118,10 +123,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (PathRules.Norm(a.path) != path || a.name != name)
                     Add(DriftKind.AsmdefMovedOrRenamed, m, guid, $"Expected {name} at {path}, found {a.name} at {a.path}.");
                 var expected = ApplyPlanner.ComputeReferences(m, editor, report, cfg);
-                if (new HashSet<string>(a.references).SetEquals(expected)) return;
+                var onDisk = a.references.Select(ApplyPlanner.NormRef).ToList();
+                if (new HashSet<string>(onDisk).SetEquals(expected)) return;
                 var item = Add(DriftKind.ReferencesDiffer, m, guid,
-                    $"{a.path} references [{string.Join(", ", a.references)}], config computes [{string.Join(", ", expected)}].");
-                item.manualReferences = a.references.Except(expected).Distinct().ToList();
+                    $"{a.path} references [{string.Join(", ", onDisk)}], config computes [{string.Join(", ", expected)}].");
+                item.manualReferences = onDisk.Except(expected).Distinct().ToList();
             }
 
             DriftItem Add(DriftKind kind, Module m, string guid, string detail)
@@ -135,8 +141,9 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public static void AcceptDisk(ModuleConfig cfg, DiskSnapshot disk, IEnumerable<DriftItem> items)
         {
             Undo.RecordObject(cfg, "Sync from disk");
-            // Asmdef items first: they can move module.folder, which ScriptMovedOut re-checks.
-            foreach (var it in items.OrderBy(i => i.kind == DriftKind.AsmdefMissing || i.kind == DriftKind.AsmdefMovedOrRenamed ? 0 : 1))
+            // Asmdef items first (they can move module.folder, which ScriptMovedOut re-checks), then removals, then
+            // additions: a file moved from module A into B's folder must leave A before B can take it.
+            foreach (var it in items.OrderBy(Phase))
             {
                 var m = cfg.modules.FirstOrDefault(x => x.name == it.moduleName);
                 if (m == null) continue;
@@ -156,8 +163,14 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         if (!disk.asmdefsByGuid.TryGetValue(it.guid, out var a)) break;
                         var dir = Dir(PathRules.Norm(a.path));
                         if (editor && dir.EndsWith("/Editor", StringComparison.Ordinal)) dir = Dir(dir);
-                        var ns = !string.IsNullOrEmpty(a.rootNamespace) ? a.rootNamespace : a.name;
+                        // From the name, not rootNamespace: Diff compares the name to AsmdefName(module).
+                        var ns = a.name ?? "";
                         if (editor && ns.EndsWith(".Editor", StringComparison.Ordinal)) ns = ns.Substring(0, ns.Length - ".Editor".Length);
+                        // Entries recorded at their spot in the old folder (accepted from disk) follow it, else the
+                        // planner would re-nest them under the scope-relative path.
+                        var old = PathRules.Norm(m.folder);
+                        foreach (var e in m.scripts.Where(e => PathRules.IsUnder(e.originalPath, old)))
+                            e.originalPath = dir + PathRules.Norm(e.originalPath).Substring(old.Length);
                         m.folder = dir;
                         m.namespaceName = ns;
                         break;
@@ -177,15 +190,24 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         });
                         break;
                     case DriftKind.ReferencesDiffer:
-                        // Hand-added references become extraReferences. References missing on disk stay in the config:
-                        // they are computed, and re-applying the config writes them back.
+                        // Hand-added references become (editor)ExtraReferences. References missing on disk stay in the
+                        // config: they are computed, and re-applying the config writes them back.
+                        var extra = editor ? m.editorExtraReferences : m.extraReferences;
                         foreach (var r in it.manualReferences)
-                            if (!m.extraReferences.Contains(r)) m.extraReferences.Add(r);
+                            if (!extra.Contains(r)) extra.Add(r);
                         break;
                 }
             }
             EditorUtility.SetDirty(cfg);
         }
+
+        static int Phase(DriftItem i) => i.kind switch
+        {
+            DriftKind.AsmdefMissing or DriftKind.AsmdefMovedOrRenamed => 0,
+            DriftKind.ScriptDeleted or DriftKind.ScriptMovedOut => 1,
+            DriftKind.ScriptAddedInModuleFolder => 2,
+            _ => 3,
+        };
 
         // Under the module folder, and not below an asmdef that belongs to another assembly.
         static bool InModule(Module m, DiskSnapshot disk, string path)

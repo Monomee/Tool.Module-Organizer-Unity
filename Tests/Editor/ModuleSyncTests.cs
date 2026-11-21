@@ -75,13 +75,18 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         [Test]
         public void AsmdefRenamedOnDisk_AcceptDiskUpdatesModule()
         {
-            Asmdef("a1", "Assets/_Scripts/Fight/Game.Fight.asmdef", "Game.Fight");
+            Asmdef("a1", "Assets/_Scripts/Fight/Game.Fight.asmdef", "Game.Fight").rootNamespace = "Other.Root";
             disk.scriptPathByGuid["s1"] = "Assets/_Scripts/Fight/Weapon.cs";
-            Assert.That(Diff().Select(i => i.kind), Is.EquivalentTo(new[] { DriftKind.AsmdefMovedOrRenamed, DriftKind.ScriptMovedOut }));
+            // Accepted from disk earlier: recorded at its spot in the module folder.
+            combat.scripts.Add(new ScriptEntry { guid = "s2", originalPath = F + "/Sub/Damage.cs", originalNamespace = "", applied = true });
+            disk.scriptPathByGuid["s2"] = "Assets/_Scripts/Fight/Sub/Damage.cs";
+            Assert.That(Diff().Select(i => i.kind),
+                Is.EquivalentTo(new[] { DriftKind.AsmdefMovedOrRenamed, DriftKind.ScriptMovedOut, DriftKind.ScriptMovedOut }));
 
             AcceptAll();
-            Assert.That((combat.folder, combat.namespaceName), Is.EqualTo(("Assets/_Scripts/Fight", "Game.Fight")));
-            Assert.That(combat.scripts.Select(e => e.guid), Is.EqualTo(new[] { "s1" }), "the script moved with the asmdef: still in the module");
+            Assert.That((combat.folder, combat.namespaceName), Is.EqualTo(("Assets/_Scripts/Fight", "Game.Fight")), "namespace from the name, not rootNamespace");
+            Assert.That(combat.scripts.Select(e => e.guid), Is.EqualTo(new[] { "s1", "s2" }), "the scripts moved with the asmdef: still in the module");
+            Assert.That(combat.scripts[1].originalPath, Is.EqualTo("Assets/_Scripts/Fight/Sub/Damage.cs"));
             Assert.That(Diff(), Is.Empty);
         }
 
@@ -111,6 +116,75 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             ModuleSync.AcceptDisk(cfg, disk, d);
             Assert.That(combat.extraReferences, Is.EqualTo(new[] { "Unity.Manual" }));
             Assert.That(Diff(), Is.Empty, "compared as sets: disk order differs from the sorted computed list");
+        }
+
+        [Test]
+        public void EditorManualReference_GoesToEditorExtraReferences_RuntimeUnchanged()
+        {
+            combat.editorAsmdefGuid = "e1";
+            Asmdef("e1", F + "/Editor/Game.Combat.Editor.asmdef", "Game.Combat.Editor", "Unity.EditorOnly", "GUID:a1");
+            var d = Diff();
+            Assert.That(d.Select(i => (i.kind, i.guid)), Is.EqualTo(new[] { (DriftKind.ReferencesDiffer, "e1") }));
+
+            ModuleSync.AcceptDisk(cfg, disk, d);
+            Assert.That(combat.editorExtraReferences, Is.EqualTo(new[] { "Unity.EditorOnly" }));
+            Assert.That(combat.extraReferences, Is.Empty);
+            Assert.That(ApplyPlanner.ComputeReferences(combat, false, report, cfg), Is.Empty);
+            Assert.That(Diff(), Is.Empty);
+        }
+
+        [Test]
+        public void BareGuidOnDisk_MatchesComputedGuidReference()
+        {
+            report.asmdefRefs["Combat"] = new HashSet<string> { Ext };
+            Asmdef("a1", F + "/Game.Combat.asmdef", "Game.Combat", Ext);
+            Assert.That(Diff(), Is.Empty);
+        }
+
+        [Test]
+        public void ScriptMovedIntoAnotherModule_AcceptDiskReassigns_WhateverTheModuleOrder()
+        {
+            var bravo = cfg.AddModule("Bravo");
+            cfg.modules.Remove(bravo);
+            cfg.modules.Insert(0, bravo);
+            bravo.asmdefGuid = "b1";
+            Asmdef("b1", bravo.folder + "/Game.Bravo.asmdef", "Game.Bravo");
+            disk.scriptPathByGuid["s1"] = bravo.folder + "/Weapon.cs";
+            disk.sourceByGuid["s1"] = "class Weapon {}\n";
+            Assert.That(Diff().Select(i => (i.kind, i.moduleName)),
+                Is.EqualTo(new[] { (DriftKind.ScriptAddedInModuleFolder, "Bravo"), (DriftKind.ScriptMovedOut, "Combat") }));
+
+            AcceptAll();
+            Assert.That(combat.scripts, Is.Empty);
+            Assert.That(bravo.scripts.Select(e => e.guid), Is.EqualTo(new[] { "s1" }));
+            Assert.That(Diff(), Is.Empty);
+        }
+
+        [Test]
+        public void AcceptedFileInModuleSubfolder_NextApplyLeavesItAlone()
+        {
+            const string src = "namespace Game.Combat.Sub\n{\n    class Damage {}\n}\n";
+            disk.scriptPathByGuid["s2"] = F + "/Sub/Damage.cs";
+            disk.sourceByGuid["s2"] = src;
+            ModuleSync.AcceptDisk(cfg, disk, Diff());
+
+            var scan = new ScanResult();
+            var state = new DiskState();
+            void File(string guid, string path, string type, string text)
+            {
+                scan.files[guid] = new ScriptFile { guid = guid, path = path, kind = AssemblyKind.AsmDef, asmdefGuid = "a1", declaredTypes = { type } };
+                scan.types[type] = new TypeRecord { fullName = type, ns = type.Substring(0, type.LastIndexOf('.')), kind = AssemblyKind.AsmDef, assemblyName = "Game.Combat", asmdefGuid = "a1", filePaths = { path } };
+                state.pathByGuid[guid] = path;
+                state.sourceByGuid[guid] = text;
+            }
+            File("s1", F + "/Weapon.cs", "Game.Combat.Weapon", "namespace Game.Combat\n{\n    class Weapon {}\n}\n");
+            File("s2", F + "/Sub/Damage.cs", "Game.Combat.Sub.Damage", src);
+            state.pathByGuid["a1"] = F + "/Game.Combat.asmdef";
+            var validation = ModuleValidator.Validate(cfg, scan, p => state.sourceByGuid[scan.FileByPath(p).guid]);
+            var plan = ApplyPlanner.Build(cfg, scan, validation, state);
+
+            Assert.That(plan.moves.Where(mv => mv.guid == "s2"), Is.Empty);
+            Assert.That(plan.edits.Where(e => e.guid == "s2" && e.setNamespace != null), Is.Empty);
         }
 
         [Test]
