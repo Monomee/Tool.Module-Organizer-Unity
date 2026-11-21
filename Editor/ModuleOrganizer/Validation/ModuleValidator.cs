@@ -250,12 +250,12 @@ namespace Monome.UtilityPack.ModuleOrganizer
         static readonly Regex IdentRx = new Regex(@"(?<![\w@])(?<!(?:\.|::)\s*)@?([\p{L}_]\w*)", RegexOptions.Compiled);
         static readonly Regex AliasRx = new Regex(@"(?<![\w@.])using\s+@?([\p{L}_]\w*)\s*=", RegexOptions.Compiled);
 
-        // Identifiers the code writes unqualified (not right after `.` or `::`), minus using aliases, which bind before
-        // imported namespaces. Comments, literals and preprocessor lines are masked; every #if branch is kept.
-        internal static HashSet<string> UnqualifiedNames(string src)
+        // Identifiers the code writes unqualified (not right after `.` or `::`), minus (by default) using aliases, which bind
+        // before imported namespaces. Comments, literals and preprocessor lines are masked; every #if branch is kept.
+        internal static HashSet<string> UnqualifiedNames(string src, bool dropAliases = true)
         {
             var mask = DeclarationFinder.Strip(src, null, new bool[src.Length]);
-            var aliases = new HashSet<string>(AliasRx.Matches(mask).Cast<Match>().Select(m => m.Groups[1].Value));
+            var aliases = dropAliases ? new HashSet<string>(AliasRx.Matches(mask).Cast<Match>().Select(m => m.Groups[1].Value)) : new HashSet<string>();
             return new HashSet<string>(IdentRx.Matches(mask).Cast<Match>().Select(m => m.Groups[1].Value).Where(n => !aliases.Contains(n)));
         }
 

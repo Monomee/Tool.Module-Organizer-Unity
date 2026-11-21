@@ -15,7 +15,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         readonly Dictionary<string, NamespaceInfo> infos = new Dictionary<string, NamespaceInfo>();
         readonly Dictionary<string, List<string>> usings = new Dictionary<string, List<string>>();
         Dictionary<string, (string oldNs, string newNs)> moved;
-        HashSet<string> gone, nsBefore, nsAfter;
+        HashSet<string> gone;
         // First module listing a GUID wins; later listings are duplicates.
         public readonly Dictionary<string, (Module module, ScriptEntry entry)> assigned = new Dictionary<string, (Module, ScriptEntry)>();
         public readonly List<(ScriptEntry entry, Module first, Module second)> duplicates = new List<(ScriptEntry, Module, Module)>();
@@ -125,48 +125,6 @@ namespace Monome.UtilityPack.ModuleOrganizer
         // Namespaces f resolves without a using after Apply: its own (final) namespaces, their parents, and global.
         public HashSet<string> Enclosing(ScriptFile f) =>
             new HashSet<string>((Changes(f, out _, out var n) ? new List<string> { n } : Info(f).namespaces).SelectMany(ModuleValidator.Prefixes)) { "" };
-
-        // C# looks a simple name up in each enclosing namespace's members, child namespaces included, before the file's
-        // top-level usings: in Game.Combat.Editor a plain `Editor` is the namespace Game.Combat.Editor, not UnityEditor.Editor
-        // (CS0118). For each name f writes unqualified whose type only Apply makes shadowed: (alias, global:: full name),
-        // for a `using alias = ...;` inside the namespace block, which binds first. Sorted.
-        // ponytail: namespaces are all script-assembly ones (not per-assembly visibility); an extra alias is harmless.
-        public List<(string alias, string target)> ShadowAliases(ScriptFile f)
-        {
-            var result = new List<(string, string)>();
-            var cur = CurrentNamespace(Info(f));
-            var final = Changes(f, out _, out var n) ? n : cur;
-            var src = source(f);
-            if (string.IsNullOrEmpty(final) || src == null) return result; // global: nothing encloses it
-            var m = MovedTypes();
-            nsBefore ??= new HashSet<string>(scan.types.Values.SelectMany(t => ModuleValidator.Prefixes(t.ns ?? "")));
-            nsAfter ??= new HashSet<string>(scan.types.Values.SelectMany(t =>
-                ModuleValidator.Prefixes(m.TryGetValue(ModuleValidator.Outer(t.fullName), out var mv) ? mv.newNs : t.ns ?? "")));
-            var unqualified = ModuleValidator.UnqualifiedNames(src);
-            var refs = f.referencedTypes.Select(ModuleValidator.Outer).Distinct().Where(r => !r.Contains('`'))
-                .Select(r => (simple: ModuleValidator.SimpleName(r), before: NsOf(r), after: m.TryGetValue(r, out var mv) ? mv.newNs : NsOf(r)))
-                .Where(r => unqualified.Contains(r.simple));
-            foreach (var g in refs.GroupBy(r => r.simple).Where(g => g.Count() == 1))
-            {
-                var r = g.Single();
-                if (Shadowed(final, r.after, r.simple, nsAfter) && !Shadowed(cur ?? "", r.before, r.simple, nsBefore))
-                    result.Add((r.simple, "global::" + (r.after.Length == 0 ? "" : r.after + ".") + r.simple));
-            }
-            return result.OrderBy(x => x.Item1, StringComparer.Ordinal).ToList();
-
-            string NsOf(string fullName) => scan.types.TryGetValue(fullName, out var t) ? t.ns ?? "" : ModuleValidator.NsOf(fullName);
-        }
-
-        // Outward from ns: reaching the type's own namespace resolves it; a child namespace with its name shadows it first.
-        static bool Shadowed(string ns, string typeNs, string simple, HashSet<string> namespaces)
-        {
-            foreach (var n in ModuleValidator.Prefixes(ns).Append(""))
-            {
-                if (n == typeNs) return false;
-                if (namespaces.Contains(n.Length == 0 ? simple : n + "." + simple)) return true;
-            }
-            return false;
-        }
 
         // Usings Apply adds to and removes from f (sorted). Added: new namespaces of moved types f uses, and, when f's own
         // namespace changes, namespaces of unmoved types f used to see through its old enclosing namespaces. Removed:

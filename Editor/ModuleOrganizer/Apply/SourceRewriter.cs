@@ -290,22 +290,85 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return body.Insert(at, text);
         });
 
-        // `using alias = target;` first in the single namespace block, where it binds before the enclosing namespaces'
-        // members (a using at the top of the file binds after them). Unchanged if the block already has that alias.
-        public static string AddNamespaceAlias(string src, string alias, string target) => KeepBom(src, body =>
+        // Aliases the tool writes end with this marker; Apply removes and recomputes them, and never touches the user's.
+        public const string AliasMarker = "// monome:alias";
+        static readonly Regex MarkedAliasRx = new Regex(@"^[ \t]*using\s+(@?\w+)\s*=\s*([^;\r\n]+?)\s*;[ \t]*// monome:alias[ \t]*\r?$",
+            RegexOptions.Compiled | RegexOptions.Multiline);
+        static readonly Regex AliasNameRx = new Regex(@"(?<![\w@.])using\s+@?([\p{L}_]\w*)\s*=", RegexOptions.Compiled);
+
+        // `using alias = target; // monome:alias` lines, first in the single namespace block, where they bind before the
+        // enclosing namespaces' members (a using at the top of the file binds after them). The insertion point comes from
+        // the comment/literal mask: right after the `{` line when the newline ending it is real code, else on a new line
+        // right after `{`, pushing the rest of that line down.
+        public static string AddNamespaceAliases(string src, IEnumerable<(string alias, string target)> aliases) => KeepBom(src, body =>
         {
             var s = new Src(body);
             var info = Parse(s);
             if (!info.Rewritable || info.IsGlobal || info.close < 0) throw new InvalidOperationException("No single namespace block to put the alias in.");
-            var block = s.mask.Substring(info.open, info.close - info.open);
-            if (Regex.IsMatch(block, @"(?<![\w.@])using\s+@?" + Regex.Escape(alias) + @"\s*=")) return body;
-            var line = "using " + alias + " = " + target + ";";
+            var have = BlockAliasNames(s, info);
+            var lines = aliases.Where(a => !have.Contains(a.alias)).Select(a => Indent + "using " + a.alias + " = " + a.target + "; " + AliasMarker).ToList();
+            if (lines.Count == 0) return body;
+            var text = string.Join(s.nl, lines) + s.nl;
             var eol = body.IndexOf('\n', info.open);
-            if (eol < 0 || eol > info.close || s.mask.Substring(info.open + 1, eol - info.open - 1).Trim().Length > 0)
-                return body.Insert(info.open + 1, " " + line); // code right after `{`
+            if (eol < 0 || eol > info.close || s.cov[eol] || s.mask.Substring(info.open + 1, eol - info.open - 1).Trim().Length > 0)
+                return body.Insert(info.open + 1, s.nl + text);
             var at = eol + 1;
-            return body.Insert(at, Indent + line + s.nl + (NextLineBlank(body, at) ? "" : s.nl));
+            return body.Insert(at, text + (NextLineBlank(body, at) ? "" : s.nl));
         });
+
+        // The tool's marked aliases in the file, in order.
+        public static List<(string alias, string target)> MarkedAliases(string src)
+        {
+            var s = new Src(NoBom(src));
+            return MarkedAliasRx.Matches(s.text).Cast<Match>().Where(m => IsCode(s, m)).Select(m => (m.Groups[1].Value, m.Groups[2].Value)).ToList();
+        }
+
+        // Drops every marked alias line, plus the blank line AddNamespaceAliases put after them when it now follows `{`.
+        public static string RemoveMarkedAliases(string src) => KeepBom(src, body =>
+        {
+            var s = new Src(body);
+            var marked = new HashSet<int>(MarkedAliasRx.Matches(body).Cast<Match>().Where(m => IsCode(s, m)).Select(m => m.Index));
+            if (marked.Count == 0) return body;
+            var sb = new StringBuilder(body.Length);
+            var prevKept = "";
+            var dropped = false;
+            foreach (var (start, _, next) in s.lines)
+            {
+                if (marked.Contains(start))
+                {
+                    dropped = true;
+                    continue;
+                }
+                var line = body.Substring(start, next - start);
+                if (dropped && line.Trim().Length == 0 && prevKept.TrimEnd().EndsWith("{", StringComparison.Ordinal))
+                {
+                    dropped = false;
+                    continue;
+                }
+                dropped = false;
+                sb.Append(line);
+                prevKept = s.mask.Substring(start, next - start); // `{ // comment` still ends with `{`
+            }
+            return sb.ToString();
+        });
+
+        // Alias names declared inside the single namespace block (a file-level alias does not protect a name a namespace shadows).
+        public static HashSet<string> BlockAliasNames(string src)
+        {
+            var s = new Src(NoBom(src));
+            var info = Parse(s);
+            return info.IsGlobal || info.close < 0 ? new HashSet<string>() : BlockAliasNames(s, info);
+        }
+
+        static HashSet<string> BlockAliasNames(Src s, NamespaceInfo info) =>
+            new HashSet<string>(AliasNameRx.Matches(s.mask.Substring(info.open, info.close - info.open)).Cast<Match>().Select(m => m.Groups[1].Value));
+
+        // The match's `using` keyword is code, not inside a comment or literal.
+        static bool IsCode(Src s, Match m)
+        {
+            var u = s.text.IndexOf("using", m.Index, StringComparison.Ordinal);
+            return u >= 0 && !s.cov[u];
+        }
 
         static bool NextLineBlank(string src, int at)
         {

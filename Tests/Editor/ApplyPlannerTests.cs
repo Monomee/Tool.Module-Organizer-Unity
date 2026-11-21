@@ -129,18 +129,12 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             var rename = new Dictionary<string, string>();
             foreach (var e in p.edits)
             {
-                var src = disk.sourceByGuid[e.guid];
                 if (e.setNamespace != null)
-                {
-                    src = SourceRewriter.SetNamespace(src, e.setNamespace);
                     foreach (var tn in scan.files[e.guid].declaredTypes)
                         rename[tn] = (e.setNamespace.Length == 0 ? "" : e.setNamespace + ".") + Simple(tn);
-                }
-                foreach (var (alias, target) in e.aliases) src = SourceRewriter.AddNamespaceAlias(src, alias, target);
-                foreach (var u in e.addUsings) src = SourceRewriter.AddUsing(src, u);
-                foreach (var u in e.removeUsings) src = SourceRewriter.RemoveUsing(src, u);
-                foreach (var (type, oldNs, oldAsm) in e.movedFrom) src = SourceRewriter.AddMovedFrom(src, type, oldNs, oldAsm);
-                disk.sourceByGuid[e.guid] = src;
+                var errors = new List<string>();
+                disk.sourceByGuid[e.guid] = ModuleApplier.Rewrite(disk.sourceByGuid[e.guid], e, e.guid, errors); // the applier's own text step
+                Assert.IsEmpty(errors);
             }
             string R(string n) => rename.TryGetValue(n, out var r) ? r : n;
             foreach (var t in scan.types.Values.ToList())
@@ -604,7 +598,7 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
-        public void EditorFile_InModuleEditorNamespace_AliasesTheTypeThatNamespaceShadows()
+        public void EditorFile_InModuleEditorNamespace_AliasesTheTypeThatNamespaceShadows_RestoreDropsIt()
         {
             // In namespace Game.Combat.Editor a plain `Editor` binds to that namespace (CS0118), not to UnityEditor.Editor.
             Add(S + "Weapon.cs", "w", "Weapon");
@@ -618,9 +612,83 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.IsEmpty(p.edits.Single(x => x.guid == "q").aliases);
             Assert.IsEmpty(p.edits.Single(x => x.guid == "w").aliases);
             Execute(p);
-            StringAssert.Contains("namespace Game.Combat.Editor\n{\n    using Editor = global::UnityEditor.Editor;\n\n    [CustomEditor",
+            StringAssert.Contains("namespace Game.Combat.Editor\n{\n    using Editor = global::UnityEditor.Editor; // monome:alias\n\n    [CustomEditor",
                 Source(S + "Combat/Editor/WeaponEditor.cs"));
-            Assert.IsFalse(Plan().edits.Any(x => x.aliases.Count > 0));
+            Assert.IsFalse(Plan().edits.Any(x => x.resetAliases || x.aliases.Count > 0));
+
+            // Restored to the global namespace: the marked alias goes with the namespace block.
+            Unassign("e");
+            p = Plan();
+            var op = p.edits.Single(x => x.guid == "e");
+            Assert.IsTrue(op.resetAliases);
+            Assert.IsEmpty(op.aliases);
+            Execute(p);
+            var restored = Source(S + "Editor/WeaponEditor.cs");
+            StringAssert.DoesNotContain("monome:alias", restored);
+            StringAssert.Contains("public class WeaponEditor : Editor {}", restored);
+        }
+
+        [Test]
+        public void RuntimeFile_UsingEditorUnderIf_GetsNoAliasFromItsModulesEditorNamespace()
+        {
+            // Game.Combat.Editor lives in the Editor-only Game.Combat.Editor asmdef, which the runtime asmdef never sees:
+            // an alias there would break the player build (CS0246 without UNITY_EDITOR).
+            Add(S + "Weapon.cs", "w", "Weapon", "UnityEditor.Editor");
+            disk.sourceByGuid["w"] = "#if UNITY_EDITOR\nusing UnityEditor;\n#endif\n\npublic class Weapon\n{\n#if UNITY_EDITOR\n    Editor cached;\n#endif\n}\n";
+            Add(S + "Editor/WeaponEditor.cs", "e", true, "WeaponEditor", "Weapon");
+            Assign("Combat", "w", "e");
+            var w = Plan().edits.Single(x => x.guid == "w");
+            Assert.IsEmpty(w.aliases);
+            Assert.IsFalse(w.resetAliases);
+        }
+
+        [Test]
+        public void FileLevelAlias_DoesNotProtectAShadowedName_UserBlockAliasDoesAndIsKept()
+        {
+            Add(S + "Weapon.cs", "w", "Weapon");
+            Add(S + "Editor/TopAlias.cs", "a", true, "TopAlias", "UnityEditor.Editor");
+            disk.sourceByGuid["a"] = "using Editor = UnityEditor.Editor;\n\npublic class TopAlias : Editor {}\n";
+            Add(S + "Editor/BlockAlias.cs", "b", true, "Game.Old.BlockAlias", "UnityEditor.Editor");
+            disk.sourceByGuid["b"] = "namespace Game.Old\n{\n    using Editor = UnityEditor.Editor;\n\n    public class BlockAlias : Editor {}\n}\n";
+            Assign("Combat", "w", "a", "b");
+            var p = Plan();
+            CollectionAssert.AreEqual(new[] { ("Editor", "global::UnityEditor.Editor") }, p.edits.Single(x => x.guid == "a").aliases);
+            var b = p.edits.Single(x => x.guid == "b");
+            Assert.IsEmpty(b.aliases);
+            Assert.IsFalse(b.resetAliases);
+            Execute(p);
+            StringAssert.Contains("{\n    using Editor = global::UnityEditor.Editor; // monome:alias\n", Source(S + "Combat/Editor/TopAlias.cs"));
+            Assert.AreEqual("namespace Game.Combat.Editor\n{\n    using Editor = UnityEditor.Editor;\n\n    public class BlockAlias : Editor {}\n}\n",
+                Source(S + "Combat/Editor/BlockAlias.cs"));
+            Assert.IsFalse(Plan().edits.Any(x => x.resetAliases));
+        }
+
+        [Test]
+        public void MarkedAlias_FollowsItsTargetWhenTheModuleIsRenamed()
+        {
+            // User sits in Game.Alpha, whose child namespace Game.Alpha.Tools (Hammer) shadows the type Tools from Beta.
+            Add(S + "Tools.cs", "tl", "Tools");
+            Add(S + "Tools/Hammer.cs", "h", "Hammer");
+            Add(S + "User.cs", "u", "User", "Tools");
+            disk.sourceByGuid["u"] = "class User\n{\n    Tools t;\n}\n";
+            var beta = Assign("Beta", "tl");
+            Assign("Alpha", "h", "u");
+            var p = Plan();
+            CollectionAssert.AreEqual(new[] { ("Tools", "global::Game.Beta.Tools") }, p.edits.Single(x => x.guid == "u").aliases);
+            Execute(p);
+            StringAssert.Contains("using Tools = global::Game.Beta.Tools; // monome:alias", Source(S + "Alpha/User.cs"));
+
+            Assert.IsTrue(ModuleEdits.RenameModule(cfg, beta, "Gamma"));
+            beta.namespaceName = "Game.Gamma";
+            p = Plan();
+            var u = p.edits.Single(x => x.guid == "u");
+            Assert.IsTrue(u.resetAliases);
+            CollectionAssert.AreEqual(new[] { ("Tools", "global::Game.Gamma.Tools") }, u.aliases);
+            Execute(p);
+            var src = Source(S + "Alpha/User.cs");
+            StringAssert.Contains("using Tools = global::Game.Gamma.Tools; // monome:alias", src);
+            StringAssert.DoesNotContain("Game.Beta", src);
+            Assert.IsFalse(Plan().edits.Any(x => x.resetAliases));
         }
 
         [Test]
@@ -642,6 +710,34 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.IsEmpty(p.edits.Single(x => x.guid == "s").removeUsings);
             Execute(p);
             StringAssert.DoesNotContain("using Game.Alpha;", Source(S + "Beta/Target.cs"));
+        }
+
+        [Test]
+        public void UsingOfAModuleNamespace_IsKept_WhileStillReachable()
+        {
+            // Target (Beta) has `using Game.Alpha;` but uses nothing from Alpha.
+            Add(S + "Payload.cs", "p", "Payload");
+            Add(S + "Target.cs", "t", "Target");
+            disk.sourceByGuid["t"] = "using Game.Alpha;\n\nclass Target {}\n";
+            Add(S + "Data/Row.cs", "r", "Row");
+            Add(S + "Editor/Tool.cs", "e", true, "Tool");
+            disk.sourceByGuid["e"] = "using Game.Beta.Data;\n\nclass Tool {}\n";
+            var alpha = Assign("Alpha", "p");
+            var beta = Assign("Beta", "t", "r", "e");
+            List<string> Removed(string g) => Plan().edits.SingleOrDefault(x => x.guid == g)?.removeUsings ?? new List<string>();
+
+            CollectionAssert.AreEqual(new[] { "Game.Alpha" }, Removed("t")); // Beta does not reference Alpha
+            Assert.IsEmpty(Removed("e")); // an Editor file sees its own runtime module (Game.Beta.Data)
+            beta.extraReferences.Add("Game.Alpha"); // reachable through extraReferences by asmdef name
+            Assert.IsEmpty(Removed("t"));
+            beta.extraReferences.Clear();
+            alpha.asmdefGuid = new string('a', 32); // ... or by GUID
+            beta.extraReferences.Add(new string('a', 32));
+            Assert.IsEmpty(Removed("t"));
+            beta.extraReferences.Clear();
+            Assert.AreEqual(new[] { "Game.Alpha" }, Removed("t"));
+            Add("Assets/Other/Extra.cs", "x", "Game.Alpha.Extra"); // the namespace also holds a type outside any module
+            Assert.IsEmpty(Removed("t"));
         }
     }
 }

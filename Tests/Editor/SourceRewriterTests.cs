@@ -297,15 +297,35 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
                 SourceRewriter.FindUsings("using Game . Combat;\nusing static Foo.Bar;\nusing A = B.C;\n#if X\nusing System;\n#endif\nnamespace N\n{\n    using Inner;\n}\n"));
 
         [Test]
-        public void AddNamespaceAlias_FirstInTheBlock_Idempotent()
+        public void AddNamespaceAliases_FirstInTheBlock_MarkedIdempotentRemovable()
         {
-            const string a = "using Editor = global::UnityEditor.Editor;";
+            const string a = "using Editor = global::UnityEditor.Editor; // monome:alias";
+            var al = new[] { ("Editor", "global::UnityEditor.Editor") };
             var src = "using UnityEditor;\r\n\r\nnamespace G.Editor\r\n{ // x\r\n    class E : Editor {}\r\n}\r\n";
-            var r = SourceRewriter.AddNamespaceAlias(src, "Editor", "global::UnityEditor.Editor");
+            var r = SourceRewriter.AddNamespaceAliases(src, al);
             Assert.AreEqual("using UnityEditor;\r\n\r\nnamespace G.Editor\r\n{ // x\r\n    " + a + "\r\n\r\n    class E : Editor {}\r\n}\r\n", r);
-            Assert.AreEqual(r, SourceRewriter.AddNamespaceAlias(r, "Editor", "global::UnityEditor.Editor"));
-            Assert.AreEqual("namespace N { " + a + " class E {} }", SourceRewriter.AddNamespaceAlias("namespace N { class E {} }", "Editor", "global::UnityEditor.Editor"));
-            Assert.Throws<System.InvalidOperationException>(() => SourceRewriter.AddNamespaceAlias("class E {}\n", "Editor", "global::UnityEditor.Editor"));
+            Assert.AreEqual(r, SourceRewriter.AddNamespaceAliases(r, al));
+            CollectionAssert.AreEqual(al, SourceRewriter.MarkedAliases(r));
+            Assert.AreEqual(src, SourceRewriter.RemoveMarkedAliases(r));
+            Assert.AreEqual("namespace N {\n    " + a + "\n class E {} }", SourceRewriter.AddNamespaceAliases("namespace N { class E {} }", al));
+            Assert.Throws<System.InvalidOperationException>(() => SourceRewriter.AddNamespaceAliases("class E {}\n", al));
+        }
+
+        [Test]
+        public void AddNamespaceAliases_NeverInsideAComment_MarkerInCommentIgnored()
+        {
+            var al = new[] { ("Editor", "global::UnityEditor.Editor") };
+            var src = "namespace N { /* comment\ncontinued */\n    class E : Editor {}\n}\n";
+            Assert.AreEqual("namespace N {\n    using Editor = global::UnityEditor.Editor; // monome:alias\n /* comment\ncontinued */\n    class E : Editor {}\n}\n",
+                SourceRewriter.AddNamespaceAliases(src, al));
+            var fake = "namespace N\n{\n/*\n    using Editor = X; // monome:alias\n*/\n}\n";
+            Assert.IsEmpty(SourceRewriter.MarkedAliases(fake));
+            Assert.AreEqual(fake, SourceRewriter.RemoveMarkedAliases(fake));
+            // A user's own (unmarked) alias is neither reported nor removed, and blocks a second one of that name.
+            var user = "namespace N\n{\n    using Editor = UnityEditor.Editor;\n}\n";
+            Assert.IsEmpty(SourceRewriter.MarkedAliases(user));
+            Assert.AreEqual(user, SourceRewriter.RemoveMarkedAliases(user));
+            Assert.AreEqual(user, SourceRewriter.AddNamespaceAliases(user, al));
         }
     }
 }

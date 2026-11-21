@@ -1,12 +1,12 @@
 # Monome Utility Pack
 
-> **English summary.** Editor-only Unity 6 package. Its main tool, **Module Organizer**
+> **English summary.** Editor-only Unity 6 package (tested on 6000.3). Its main tool, **Module Organizer**
 > (`Tools > Monome > Module Organizer`), lets you drag existing scripts into modules; **Apply** then creates the module
 > folders and `.asmdef` files, moves the scripts (GUIDs kept), rewrites their namespaces and adds `[MovedFrom]` so
 > serialized data survives. A **Sync** tab detects changes you made by hand on disk and can take them into the config.
 > Commit before Apply: git is the undo. Only the active build target is compile-checked.
 
-Gói chỉ dùng trong Editor cho Unity 6 (6000.0 trở lên). Công cụ chính là **Module Organizer**: kéo các script có sẵn
+Gói chỉ dùng trong Editor cho Unity 6 (6000.0 trở lên; đã kiểm thử trên 6000.3). Công cụ chính là **Module Organizer**: kéo các script có sẵn
 vào từng module, bấm **Apply**, tool sẽ tạo thư mục + `.asmdef`, chuyển file (giữ GUID), sửa namespace và thêm
 `[MovedFrom]` để dữ liệu đã serialize không bị mất. Tab **Sync** phát hiện những thay đổi bạn làm tay trên ổ đĩa.
 

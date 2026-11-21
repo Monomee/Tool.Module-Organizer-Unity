@@ -34,7 +34,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public string setNamespace; // null = unchanged, "" = back to global
         public List<string> addUsings = new List<string>();
         public List<string> removeUsings = new List<string>();
-        public List<(string alias, string target)> aliases = new List<(string, string)>(); // inside the namespace block (FileFates.ShadowAliases)
+        public bool resetAliases; // drop the file's marked (`// monome:alias`) aliases first, then add `aliases`
+        public List<(string alias, string target)> aliases = new List<(string, string)>(); // marked, inside the namespace block (ApplyPlanner ShadowAliases)
         public List<(string type, string oldNs, string oldAsm)> movedFrom = new List<(string, string, string)>(); // type = simple name, Cecil arity kept
     }
 
@@ -103,7 +104,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var cleanup = new HashSet<string>();
             var roots = new HashSet<string>(cfg.scopeFolders.Select(PathRules.Norm).Append(PathRules.Norm(cfg.EffectiveModulesRoot)));
-            List<(string ns, string node)> finalNodes = null; // top-level types after Apply: namespace, module node (null = no module)
+            List<FinalType> finalTypes = null;
 
             foreach (var f in files)
             {
@@ -127,7 +128,14 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (fates.Changes(f, out _, out var newNs)) op.setNamespace = newNs;
                 (op.addUsings, op.removeUsings) = fates.Usings(f);
                 op.removeUsings = op.removeUsings.Union(UnreachableUsings(f)).OrderBy(n => n, StringComparer.Ordinal).ToList();
-                op.aliases = fates.ShadowAliases(f);
+                // Marked aliases are recomputed from scratch; the file is edited only when the set changes.
+                var src = disk.sourceByGuid.TryGetValue(f.guid, out var text) ? text : null;
+                var needed = src == null ? new List<(string, string)>() : ShadowAliases(f, SourceRewriter.RemoveMarkedAliases(src));
+                if (src != null && !SourceRewriter.MarkedAliases(src).SequenceEqual(needed))
+                {
+                    op.resetAliases = true;
+                    op.aliases = needed;
+                }
                 var asm = fates.TargetAssembly(f);
                 foreach (var t in serializableByFirstFile[f.path].OrderBy(t => t.fullName, StringComparer.Ordinal))
                 {
@@ -138,7 +146,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     var className = oldNs.Length == 0 ? t.fullName : t.fullName.Substring(oldNs.Length + 1);
                     plan.reserializeTypeKeys.Add(oldNs + "|" + t.assemblyName + "|" + className);
                 }
-                if (op.setNamespace != null || op.addUsings.Count + op.removeUsings.Count + op.aliases.Count + op.movedFrom.Count > 0) plan.edits.Add(op);
+                if (op.setNamespace != null || op.resetAliases || op.addUsings.Count + op.removeUsings.Count + op.aliases.Count + op.movedFrom.Count > 0) plan.edits.Add(op);
             }
 
             // GUIDs first, so every asmdef can reference every other by GUID.
@@ -211,31 +219,83 @@ namespace Monome.UtilityPack.ModuleOrganizer
             // (the type it used from there moved away): CS0234. Namespaces with any type outside modules are kept.
             List<string> UnreachableUsings(ScriptFile f)
             {
+                if (fates.ModuleOf(f) == null) return new List<string>(); // Assembly-CSharp(-Editor) sees every auto-referenced asmdef
+                var sees = Sees(f);
+                var enclosing = fates.Enclosing(f);
+                return fates.FileUsings(f).Where(n => !enclosing.Contains(n)).Where(n =>
+                {
+                    var holders = FinalTypes().Where(t => t.ns == n || t.ns.StartsWith(n + ".", StringComparison.Ordinal)).ToList();
+                    return holders.Count > 0 && holders.All(t => t.node != null && !sees(t));
+                }).ToList();
+            }
+
+            // C# looks a simple name up in each enclosing namespace's members, child namespaces included, before the file's
+            // top-level usings and aliases: in Game.Combat.Editor a plain `Editor` is the namespace Game.Combat.Editor, not
+            // UnityEditor.Editor (CS0118). For each name f writes unqualified whose referenced type a namespace visible to f's
+            // assembly shadows after Apply: (alias, global:: full name), for a marked alias inside the namespace block.
+            // src is f's source without its marked aliases; its own aliases inside the block protect their names. Sorted.
+            // ponytail: an unqualified name used as a namespace qualifier (`Editor.Util` for a namespace) next to a reference
+            // to a type of that name gets an alias it does not want; a shadowed name used both ways cannot be fixed by text.
+            List<(string, string)> ShadowAliases(ScriptFile f, string src)
+            {
+                var result = new List<(string, string)>();
+                var final = fates.Changes(f, out _, out var n) ? n : FileFates.CurrentNamespace(fates.Info(f));
+                if (string.IsNullOrEmpty(final)) return result; // global (nothing encloses it) or not rewritable
+                var sees = Sees(f);
+                var namespaces = new HashSet<string>(FinalTypes().Where(sees).SelectMany(t => ModuleValidator.Prefixes(t.ns)));
+                namespaces.UnionWith(ModuleValidator.Prefixes(final));
+                var names = ModuleValidator.UnqualifiedNames(src, false);
+                names.ExceptWith(SourceRewriter.BlockAliasNames(src));
+                var refs = f.referencedTypes.Select(ModuleValidator.Outer).Distinct().Where(r => !r.Contains('`'))
+                    .Select(r => (simple: ModuleValidator.SimpleName(r),
+                        ns: moved.TryGetValue(r, out var mv) ? mv.newNs : scan.types.TryGetValue(r, out var t) ? t.ns ?? "" : ModuleValidator.NsOf(r)))
+                    .Where(r => names.Contains(r.simple));
+                foreach (var g in refs.GroupBy(r => r.simple).Where(g => g.Count() == 1))
+                {
+                    var r = g.Single();
+                    if (Shadowed(final, r.ns, r.simple, namespaces))
+                        result.Add((r.simple, "global::" + (r.ns.Length == 0 ? "" : r.ns + ".") + r.simple));
+                }
+                return result.OrderBy(x => x.Item1, StringComparer.Ordinal).ToList();
+            }
+
+            // Which top-level types (after Apply) f's assembly can see. A module asmdef: its own node, the modules and outside
+            // asmdefs it references (report edges/asmdefRefs, extra references; an Editor asmdef also its runtime one).
+            // Assembly-CSharp: everything that is not Editor-only. Assembly-CSharp-Editor: everything.
+            Func<FinalType, bool> Sees(ScriptFile f)
+            {
                 var m = fates.ModuleOf(f);
-                if (m == null) return new List<string>(); // Assembly-CSharp(-Editor) sees every auto-referenced asmdef
+                if (m == null) return f.IsEditor ? (Func<FinalType, bool>)(_ => true) : t => !t.editor;
                 var node = Node(m, f.IsEditor);
-                var visible = new HashSet<string>(report.edges.Where(e => e.from == node).Select(e => e.to)) { node };
-                if (f.IsEditor) visible.Add(m.name);
-                var extra = m.extraReferences.Concat(f.IsEditor ? m.editorExtraReferences : new List<string>()).Select(NormRef).ToList();
+                var nodes = new HashSet<string>(report.edges.Where(e => e.from == node).Select(e => e.to)) { node };
+                if (f.IsEditor) nodes.Add(m.name);
+                var refs = new HashSet<string>(m.extraReferences.Concat(f.IsEditor ? m.editorExtraReferences : new List<string>())
+                    .Concat(report.asmdefRefs.TryGetValue(node, out var outside) ? outside : new HashSet<string>()).Select(NormRef));
                 foreach (var x in cfg.modules)
                 foreach (var ed in new[] { false, true })
                 {
                     var g = ed ? x.editorAsmdefGuid : x.asmdefGuid;
-                    if (extra.Contains(PathRules.AsmdefName(x, ed)) || (!string.IsNullOrEmpty(g) && extra.Contains("GUID:" + g))) visible.Add(Node(x, ed));
+                    if (refs.Contains(PathRules.AsmdefName(x, ed)) || (!string.IsNullOrEmpty(g) && refs.Contains("GUID:" + g))) nodes.Add(Node(x, ed));
                 }
-                finalNodes ??= scan.types.Values.Where(t => !t.fullName.Contains('/')).Select(t =>
-                {
-                    var tf = t.filePaths.Count > 0 ? fates.FileAt(t.filePaths[0]) : null;
-                    var tm = tf == null ? null : fates.ModuleOf(tf);
-                    return (ns: moved.TryGetValue(t.fullName, out var mv) ? mv.newNs : t.ns ?? "", node: tm == null ? null : Node(tm, tf.IsEditor));
-                }).ToList();
-                var enclosing = fates.Enclosing(f);
-                return fates.FileUsings(f).Where(n => !enclosing.Contains(n)).Where(n =>
-                {
-                    var holders = finalNodes.Where(t => t.ns == n || t.ns.StartsWith(n + ".", StringComparison.Ordinal)).Select(t => t.node).ToList();
-                    return holders.Count > 0 && holders.All(h => h != null && !visible.Contains(h));
-                }).ToList();
+                return t => t.node != null
+                    ? nodes.Contains(t.node)
+                    : t.asmdefGuid != null && (refs.Contains("GUID:" + t.asmdefGuid) || refs.Contains(t.asm));
             }
+
+            List<FinalType> FinalTypes() => finalTypes ??= scan.types.Values.Where(t => !t.fullName.Contains('/')).Select(t =>
+            {
+                var tf = t.filePaths.Count > 0 ? fates.FileAt(t.filePaths[0]) : null;
+                var tm = tf == null ? null : fates.ModuleOf(tf);
+                return new FinalType
+                {
+                    ns = moved.TryGetValue(t.fullName, out var mv) ? mv.newNs : t.ns ?? "",
+                    node = tm == null ? null : Node(tm, tf.IsEditor),
+                    asm = tf == null ? t.assemblyName : fates.TargetAssembly(tf) ?? t.assemblyName,
+                    // ponytail: types of a file-less asmdef (package) count as runtime; their editor-ness is not scanned.
+                    editor = tf?.IsEditor ?? (t.kind is AssemblyKind.Editor or AssemblyKind.FirstPassEditor),
+                    asmdefGuid = tf == null || tm == null && fates.TargetAssembly(tf) == null ? t.asmdefGuid : null,
+                };
+            }).ToList();
 
             string CurrentPath(string guid) => disk.pathByGuid.TryGetValue(guid, out var p) ? p : null;
 
@@ -298,6 +358,24 @@ namespace Monome.UtilityPack.ModuleOrganizer
         internal static string NormRef(string r) => r != null && GuidRx.IsMatch(r) ? "GUID:" + r : r;
 
         static string Node(Module m, bool editor) => m.name + (editor ? ".Editor" : "");
+
+        // A top-level type after Apply: namespace and where it lives (module node, else assembly; asmdefGuid for an outside asmdef).
+        class FinalType
+        {
+            public string ns, node, asm, asmdefGuid;
+            public bool editor;
+        }
+
+        // Outward from ns: reaching the type's own namespace resolves it; a child namespace with its name shadows it first.
+        static bool Shadowed(string ns, string typeNs, string simple, HashSet<string> namespaces)
+        {
+            foreach (var n in ModuleValidator.Prefixes(ns).Append(""))
+            {
+                if (n == typeNs) return false;
+                if (namespaces.Contains(n.Length == 0 ? simple : n + "." + simple)) return true;
+            }
+            return false;
+        }
 
         // Tool layout: {folder}/X.asmdef or {folder}/Editor/X.Editor.asmdef.
         static string ModuleFolderOf(string asmdefPath)

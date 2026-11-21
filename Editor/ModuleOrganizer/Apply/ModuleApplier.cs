@@ -157,21 +157,29 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 errors.Add($"Not a UTF-8 text file, cannot edit: {path}");
                 return null;
             }
-            var text = src;
+            var text = Rewrite(src, op, path, errors);
+            if (errors.Count > n || text == src) return null;
+            var body = Utf8.GetBytes(text);
+            return bom ? Bom.Concat(body).ToArray() : body;
+        }
+
+        // The text edits of op, in the one order everything uses (tests included): stale marked aliases out, namespace,
+        // fresh aliases into the new block, usings, MovedFrom.
+        public static string Rewrite(string src, TextEditOp op, string path, List<string> errors)
+        {
+            var text = op.resetAliases ? SourceRewriter.RemoveMarkedAliases(src) : src;
             if (op.setNamespace != null)
             {
                 if (SourceRewriter.Parse(text).Rewritable) text = SourceRewriter.SetNamespace(text, op.setNamespace);
                 else errors.Add($"Namespace layout too complex to rewrite: {path}");
             }
-            foreach (var (alias, target) in op.aliases) text = SourceRewriter.AddNamespaceAlias(text, alias, target);
+            if (op.aliases.Count > 0) text = SourceRewriter.AddNamespaceAliases(text, op.aliases);
             foreach (var u in op.removeUsings) text = SourceRewriter.RemoveUsing(text, u);
             foreach (var u in op.addUsings) text = SourceRewriter.AddUsing(text, u);
             foreach (var (type, oldNs, oldAsm) in op.movedFrom)
                 if (!SourceRewriter.TryAddMovedFrom(text, type, oldNs, oldAsm, out text))
                     errors.Add($"MovedFrom target not found: {type} in {path}");
-            if (errors.Count > n || text == src) return null;
-            var body = Utf8.GetBytes(text);
-            return bom ? Bom.Concat(body).ToArray() : body;
+            return text;
         }
 
         // Only GUIDs the project really holds are recorded; the rest only after a fully clean run.
