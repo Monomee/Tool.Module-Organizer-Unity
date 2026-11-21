@@ -185,3 +185,90 @@ Muốn tạo lại asset fixture: `-executeMethod E2EDriver.Setup -quit`.
 11. Thử hoàn tác bằng git: đóng Unity, chạy `git status` (chỉ có thay đổi trong `TestHost~/`).
 12. Dọn dẹp, chỉ cho project test: `git checkout -- "TestHost~"` và `git clean -fd -- "TestHost~/Assets"`. Mở lại
     `TestHost~` để import lại. Mong đợi: các file quay về chỗ cũ, không lỗi compile; `git status --porcelain` trống.
+
+## Lỗi có thể gặp khi thử trong Unity
+
+Mỗi mục: **Triệu chứng**, **Nguyên nhân có thể**, **Gửi lại gì** (để mình sửa nhanh). Với mọi mục, gửi kèm phiên bản
+Unity, và nếu được thì file `ModuleConfig.asset` (mở bằng trình soạn thảo text) cùng `git status --porcelain`.
+Console: bấm chuột phải vào dòng lỗi > **Copy**, hoặc gửi file `Editor.log`
+(`%LOCALAPPDATA%\Unity\Editor\Editor.log` trên Windows).
+
+1. **Kéo không bắt đầu, hoặc thả không được nhận** (con trỏ hiện dấu cấm, thẻ module không đổi).
+   - Nguyên nhân có thể: chưa Scan (cửa sổ chỉ nhận file có trong lần scan); file nằm ngoài scope, thuộc
+     firstpass hoặc thuộc một asmdef không do tool tạo (không gán được); kéo từ cửa sổ Project một thứ không phải `.cs`
+     hay thư mục; danh sách trong thẻ chưa được chọn trước khi kéo (phải bấm chọn dòng rồi mới kéo).
+   - Gửi lại: ảnh chụp cửa sổ lúc đang kéo (thấy con trỏ), đường dẫn file đã kéo, kéo từ đâu (cây bên trái, thẻ khác,
+     cửa sổ Project), và Console có lỗi `[ModuleOrganizer]` hay exception nào không.
+
+2. **Bố cục cửa sổ vỡ hoặc bị ép khi cửa sổ nhỏ** (cột chồng lên nhau, nút bị che, tab Issues/Plan không cuộn được).
+   - Nguyên nhân có thể: USS/UXML không được nạp (cửa sổ hiện hộp lỗi `Missing ...uxml`), hoặc kích thước tối thiểu
+     của các cột chưa hợp với màn hình/DPI của bạn.
+   - Gửi lại: ảnh chụp ở kích thước bị vỡ và ở kích thước bình thường, độ phân giải màn hình và mức Scale của
+     Windows, và dòng lỗi UI Toolkit trong Console nếu có.
+
+3. **Tab Result cứ báo "Waiting for the compile result…"**.
+   - Nguyên nhân có thể: Unity chưa compile xong (thanh tiến trình góc phải dưới); compile lỗi mà Unity không báo về
+     (hãy xem Console); hoặc Apply không làm Unity compile gì nên phải đợi lần reload kế tiếp. Dòng chờ hiện
+     `domain reload k of at most 3`: sau 3 lần reload mà chưa xong, kiểm tra tự bỏ và Result có cảnh báo.
+   - Gửi lại: ảnh tab Result (cả số `k`), các dòng Console từ lúc bấm Confirm Apply, và trạng thái `Edit > Preferences
+     > Asset Pipeline > Auto Refresh` (bật hay tắt). Nếu tắt Auto Refresh, bấm `Ctrl+R` rồi xem lại.
+
+4. **Confirm Apply vẫn bị tắt (xám)**. Rê chuột lên nút Apply: tooltip nói lý do.
+   - `Pending asset migration — fix compile errors first.`: một lần Apply trước còn nợ việc serialize lại asset
+     (`owedReserializeKeys` trong config). Nguyên nhân: compile lỗi, Editor đóng trước khi reload, hoặc có asset không
+     đọc được (Result/Console có dòng `Could not read ... stays owed`). Sửa lỗi compile, đóng file đang khóa asset đó,
+     rồi bấm **Scan**.
+   - `The plan has errors (see the Plan tab).` với `[WriteBoundary]`: config trỏ ra ngoài các scope folder và modules
+     root (thường do đổi scope hoặc modulesRoot sau khi đã Apply). Tab Issues có nút **Add as scope** để thêm thư mục của
+     module vào scope; hoặc đưa module về chỗ cũ.
+   - `Fix the Error issues first.` với `[CapturedByModule]`: có file `.cs` nằm trong thư mục module mà không thuộc
+     module đó (asmdef của module sẽ compile nó mà không sửa namespace). Gán nó vào module, chuyển nó ra ngoài, hoặc
+     dùng Sync > Take from disk.
+   - Gửi lại: nội dung tooltip, ảnh tab Issues và tab Plan, và `ModuleConfig.asset`.
+
+5. **Chỉ lỗi compile player** (Editor compile OK, `Player compile (...)`: failed).
+   - Nguyên nhân có thể: một file runtime dùng kiểu Editor (`UnityEditor`) mà không nằm trong `#if UNITY_EDITOR`; code
+     trong `#if` của build target hiện tại dùng kiểu mà module asmdef không tham chiếu; một DLL chỉ dành cho Editor.
+   - Gửi lại: các dòng `error CS...` trong tab Result (bấm chuột phải để copy, hoặc lấy từ Console), build target đang
+     chọn (`File > Build Profiles`), và file `.asmdef` của module có lỗi.
+
+6. **Inspector hiện "Missing script" hoặc mất dữ liệu `[SerializeReference]` sau Apply**.
+   - Nguyên nhân có thể: Unity chưa reload xong (đợi compile); file bị chuyển mà thiếu `[MovedFrom]` (Apply lỗi giữa
+     chừng); asset lưu dạng binary/Mixed nên không được serialize lại; kiểu bị chuyển hai lần trước khi asset được
+     serialize lại. **Đừng lưu scene/prefab đó** cho tới khi rõ nguyên nhân: lưu lúc này làm mất dữ liệu thật sự. Quay
+     lại bằng git nếu cần.
+   - Gửi lại: ảnh Inspector, đường dẫn asset, đoạn YAML quanh dòng `type: {class: ..., ns: ..., asm: ...}` của asset
+     (mở bằng trình soạn thảo text), đầu file `.cs` của kiểu đó (thấy `[MovedFrom(...)]` hay không), tab Result, và giá
+     trị *Project Settings > Editor > Asset Serialization*.
+
+7. **Visual Studio 2026 không thấy các project mới** (`Game.Alpha`, `Game.Alpha.Editor`...).
+   - Nguyên nhân có thể: Unity chưa sinh lại file `.csproj`/`.sln`. Vào **Edit > Preferences > External Tools**, chọn
+     Visual Studio 2026, bấm **Regenerate project files**, rồi **Assets > Open C# Project**. Nếu vẫn thiếu, kiểm tra
+     package *Visual Studio Editor* trong Package Manager.
+   - Gửi lại: ảnh Solution Explorer, ảnh trang External Tools, và danh sách file `*.csproj` trong thư mục project.
+
+8. **Unity báo trùng tên asmdef** (`Assembly with name 'Game.X' already exists` hoặc tương tự).
+   - Nguyên nhân có thể: hai module có cùng namespace, hoặc namespace của module trùng tên một asmdef/DLL có sẵn
+     (bình thường tab Issues đã chặn bằng `[AssemblyNameClash]`); hoặc có bản sao thư mục module (ví dụ `Combat 1`) do
+     copy tay.
+   - Gửi lại: dòng lỗi đầy đủ trong Console, đường dẫn của cả hai file `.asmdef` (tìm `t:AssemblyDefinitionAsset` trong
+     cửa sổ Project), và `ModuleConfig.asset`.
+
+9. **Hộp thoại cảnh báo git hiện liên tục** ("uncommitted git changes").
+   - Nguyên nhân có thể: project còn thay đổi chưa commit (kể cả `ModuleConfig.asset` hoặc file Unity tự sửa như
+     `ProjectSettings`); hoặc `git` báo thay đổi do line ending / file `.meta` mới. Hộp thoại chỉ hỏi một lần cho mỗi
+     lần Confirm Apply.
+   - Gửi lại: kết quả `git status --porcelain` chạy ở thư mục gốc project ngay lúc đó, và cho biết nó hiện bao nhiêu
+     lần cho một lần bấm.
+
+10. **Sync báo drift ngay sau Apply**.
+    - Nguyên nhân có thể: Apply chưa xong hẳn (đợi Result báo compile OK rồi Scan lại); một bước Apply bị lỗi (xem
+      tab Result); hoặc asmdef bị Unity/VS sửa (ví dụ thêm reference) nên khác với cấu hình tính ra (`ReferencesDiffer`).
+    - Gửi lại: ảnh tab Sync (từng dòng drift), tab Result của lần Apply đó, và nội dung file `.asmdef` được nhắc tới.
+
+11. **Bị chặn sai bởi `Cycle` hoặc `InternalAccess`** (bạn chắc là không có vòng phụ thuộc / không dùng `internal`).
+    - Nguyên nhân có thể: tool đọc phụ thuộc từ DLL đã compile và thêm phụ thuộc theo text cho hằng số/enum (có thể
+      dư); `InternalAccess` tính cả thành viên `protected internal` dùng từ lớp không kế thừa, và chỉ bỏ qua khi assembly
+      khai báo có `[assembly: InternalsVisibleTo("<tên assembly sau Apply>")]`.
+    - Gửi lại: toàn văn dòng Issue (có `causedBy` / tên file), và đoạn code ở các file được nhắc tới (dòng dùng kiểu đó,
+      khai báo kiểu đó).
