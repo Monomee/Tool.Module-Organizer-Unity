@@ -8,28 +8,34 @@ using UnityEditor;
 
 namespace Monome.UtilityPack.ModuleOrganizer
 {
-    // The only code that mutates the project. GUIDs survive (MoveAsset keeps the .meta), sources keep their BOM and
-    // line endings, and asset editing is always closed again. Not undoable: git is the undo.
+    // The only code that mutates the project. Everything that can be checked is checked before the first change
+    // (pre-flight); a failing move stops the rest, and the next diff-based plan repairs from the real state.
+    // GUIDs survive (MoveAsset keeps the .meta), sources keep their BOM and line endings, asset editing is always
+    // closed again. Not undoable: git is the undo.
     public static class ModuleApplier
     {
         static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true); // throws on bytes that are not UTF-8
+        static readonly byte[] Bom = { 0xEF, 0xBB, 0xBF };
 
         public static List<string> Execute(ApplyPlan plan, ModuleConfig cfg, bool refresh = true)
         {
             var errors = plan.issues.Where(i => i.severity == Severity.Error).Select(i => "Plan error: " + i).ToList();
             if (errors.Count > 0) return errors;
+            var texts = Preflight(plan, errors);
+            if (errors.Count > 0) return errors;
 
-            var failed = new HashSet<string>(); // GUIDs whose move failed: no edits on them
-            var written = new List<AsmdefOp>();
             // Before StartAssetEditing: a folder created inside it is not in the database yet, so MoveAsset into it fails.
             foreach (var f in plan.createFolders)
             {
                 if (AssetDatabase.IsValidFolder(f)) continue;
                 var cut = f.LastIndexOf('/');
-                if (cut < 0 || string.IsNullOrEmpty(AssetDatabase.CreateFolder(f.Substring(0, cut), f.Substring(cut + 1))))
-                    errors.Add($"Could not create folder {f}");
+                if (cut >= 0 && !string.IsNullOrEmpty(AssetDatabase.CreateFolder(f.Substring(0, cut), f.Substring(cut + 1)))) continue;
+                errors.Add($"Could not create folder {f}");
+                return errors;
             }
 
+            var done = new List<AsmdefOp>();
+            var movesOk = true;
             AssetDatabase.StartAssetEditing();
             try
             {
@@ -37,71 +43,133 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 {
                     var err = AssetDatabase.MoveAsset(m.from, m.to);
                     if (string.IsNullOrEmpty(err)) continue;
-                    failed.Add(m.guid);
                     errors.Add($"Could not move {m}: {err}");
+                    movesOk = false;
+                    break;
                 }
-
-                foreach (var op in plan.asmdefs.Where(a => !a.delete))
+                if (movesOk)
                 {
-                    try
-                    {
-                        File.WriteAllText(op.path, AsmdefJson.Write(op));
-                        // New asmdef: its .meta goes down before the import so the planned GUID is the one Unity uses.
-                        if (!File.Exists(op.path + ".meta")) File.WriteAllText(op.path + ".meta", Meta(op.guid));
-                        written.Add(op);
-                    }
-                    catch (Exception e) { errors.Add($"Could not write {op.path}: {e.Message}"); }
-                }
+                    foreach (var op in plan.asmdefs.Where(a => !a.delete))
+                        try
+                        {
+                            // New asmdef: its .meta goes down first, so the planned GUID is the one Unity imports it with.
+                            if (!File.Exists(op.path + ".meta")) File.WriteAllText(op.path + ".meta", Meta(op.guid));
+                            File.WriteAllText(op.path, AsmdefJson.Write(op));
+                            done.Add(op);
+                        }
+                        catch (Exception e) { errors.Add($"Could not write {op.path}: {e.Message}"); }
 
-                var newPath = plan.moves.GroupBy(m => m.guid).ToDictionary(g => g.Key, g => g.Last().to);
-                foreach (var op in plan.edits.Where(e => !failed.Contains(e.guid)))
-                {
-                    var path = newPath.TryGetValue(op.guid, out var p) ? p : AssetDatabase.GUIDToAssetPath(op.guid);
-                    try { Edit(path, op, errors); }
-                    catch (Exception e) { errors.Add($"Could not edit {path}: {e.Message}"); }
-                }
+                    foreach (var (path, bytes) in texts)
+                        try { File.WriteAllBytes(path, bytes); }
+                        catch (Exception e) { errors.Add($"Could not write {path}: {e.Message}"); }
 
-                foreach (var op in plan.asmdefs.Where(a => a.delete))
-                {
-                    if (AssetDatabase.DeleteAsset(op.path)) written.Add(op);
-                    else errors.Add($"Could not delete {op.path}");
-                }
+                    foreach (var op in plan.asmdefs.Where(a => a.delete))
+                        if (AssetDatabase.DeleteAsset(op.path)) done.Add(op);
+                        else errors.Add($"Could not delete {op.path}");
 
-                foreach (var d in plan.deleteFoldersIfEmpty)
-                    if (Directory.Exists(d) && !Directory.EnumerateFileSystemEntries(d).Any() && !AssetDatabase.DeleteAsset(d))
-                        errors.Add($"Could not delete empty folder {d}");
+                    foreach (var d in plan.deleteFoldersIfEmpty)
+                        if (Directory.Exists(d) && !Directory.EnumerateFileSystemEntries(d).Any() && !AssetDatabase.DeleteAsset(d))
+                            errors.Add($"Could not delete empty folder {d}");
+                }
             }
             finally
             {
                 AssetDatabase.StopAssetEditing();
             }
 
-            if (refresh)
-            {
-                AssetDatabase.Refresh();
-                foreach (var op in written.Where(a => !a.delete && AssetDatabase.AssetPathToGUID(a.path) != a.guid))
-                    errors.Add($"{op.path} was imported with GUID {AssetDatabase.AssetPathToGUID(op.path)}, expected {op.guid}");
-            }
-
-            Record(plan, cfg, written, errors.Count == 0);
+            if (refresh) AssetDatabase.Refresh();
+            if (movesOk) Record(plan, cfg, done, refresh, errors);
             return errors;
         }
 
-        // Asmdef GUIDs are recorded even after a partial failure (the files exist now); the rest only on success,
-        // so a failed Apply is simply planned again.
-        static void Record(ApplyPlan plan, ModuleConfig cfg, List<AsmdefOp> written, bool ok)
+        // Every check that needs no change: move sources, destinations and their folders, and each edited file's
+        // full new text (encoding, namespace layout, MovedFrom targets). Returns (new path, bytes) of changed files.
+        static List<(string path, byte[] bytes)> Preflight(ApplyPlan plan, List<string> errors)
         {
-            foreach (var op in written.Where(a => a.moduleName != null))
+            var folders = new HashSet<string>(plan.createFolders);
+            foreach (var m in plan.moves)
             {
-                var m = cfg.modules.FirstOrDefault(x => x.name == op.moduleName);
+                var dir = m.to.Contains('/') ? m.to.Substring(0, m.to.LastIndexOf('/')) : "";
+                if (!File.Exists(m.from)) errors.Add($"Cannot move {m}: the source is missing");
+                else if ((File.Exists(m.to) || Directory.Exists(m.to)) && !string.Equals(m.from, m.to, StringComparison.OrdinalIgnoreCase))
+                    errors.Add($"Cannot move {m}: the destination is taken");
+                else if (!AssetDatabase.IsValidFolder(dir) && !folders.Contains(dir)) errors.Add($"Cannot move {m}: folder {dir} does not exist");
+            }
+            var newPath = plan.moves.GroupBy(m => m.guid).ToDictionary(g => g.Key, g => g.Last().to);
+            var texts = new List<(string, byte[])>();
+            foreach (var op in plan.edits)
+            {
+                var path = AssetDatabase.GUIDToAssetPath(op.guid);
+                if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                {
+                    errors.Add($"Cannot edit {op.guid}: file not found");
+                    continue;
+                }
+                try
+                {
+                    var bytes = Edit(path, op, errors);
+                    if (bytes != null) texts.Add((newPath.TryGetValue(op.guid, out var p) ? p : path, bytes));
+                }
+                catch (Exception e) { errors.Add($"Cannot edit {path}: {e.Message}"); }
+            }
+            return texts;
+        }
+
+        // New bytes of the file (same BOM state), or null when unchanged or on an error.
+        static byte[] Edit(string path, TextEditOp op, List<string> errors)
+        {
+            var n = errors.Count;
+            var bytes = File.ReadAllBytes(path);
+            var bom = bytes.Length >= 3 && bytes[0] == Bom[0] && bytes[1] == Bom[1] && bytes[2] == Bom[2];
+            var skip = bom ? 3 : 0;
+            string src;
+            // UTF-16/32 BOMs (FF/FE bytes) are invalid UTF-8; BOM-less UTF-16/32 shows up as NULs.
+            try { src = Utf8.GetString(bytes, skip, bytes.Length - skip); }
+            catch (DecoderFallbackException) { src = null; }
+            if (src == null || src.IndexOf('\0') >= 0)
+            {
+                errors.Add($"Not a UTF-8 text file, cannot edit: {path}");
+                return null;
+            }
+            var text = src;
+            if (op.setNamespace != null)
+            {
+                if (SourceRewriter.Parse(text).Rewritable) text = SourceRewriter.SetNamespace(text, op.setNamespace);
+                else errors.Add($"Namespace layout too complex to rewrite: {path}");
+            }
+            foreach (var u in op.removeUsings) text = SourceRewriter.RemoveUsing(text, u);
+            foreach (var u in op.addUsings) text = SourceRewriter.AddUsing(text, u);
+            foreach (var (type, oldNs, oldAsm) in op.movedFrom)
+                if (!SourceRewriter.TryAddMovedFrom(text, type, oldNs, oldAsm, out text))
+                    errors.Add($"MovedFrom target not found: {type} in {path}");
+            if (errors.Count > n || text == src) return null;
+            var body = Utf8.GetBytes(text);
+            return bom ? Bom.Concat(body).ToArray() : body;
+        }
+
+        // Only GUIDs the project really holds are recorded; the rest only after a fully clean run.
+        static void Record(ApplyPlan plan, ModuleConfig cfg, List<AsmdefOp> done, bool refresh, List<string> errors)
+        {
+            foreach (var op in done)
+            {
+                if (!op.delete && !Holds(op, refresh))
+                {
+                    errors.Add($"{op.path} does not carry the planned GUID {op.guid}; not recorded");
+                    continue;
+                }
+                var m = op.moduleName == null ? null : cfg.modules.FirstOrDefault(x => x.name == op.moduleName);
                 if (m == null) continue;
                 var guid = op.delete ? null : op.guid;
                 if (op.editorOnly) m.editorAsmdefGuid = guid;
                 else m.asmdefGuid = guid;
             }
-            if (ok)
+            if (errors.Count == 0)
             {
-                foreach (var e in cfg.modules.SelectMany(m => m.scripts)) e.applied = true;
+                foreach (var e in cfg.modules.SelectMany(m => m.scripts))
+                {
+                    var p = AssetDatabase.GUIDToAssetPath(e.guid);
+                    if (!string.IsNullOrEmpty(p) && File.Exists(p)) e.applied = true;
+                }
                 cfg.pendingRemovals.RemoveAll(e => plan.removeEntries.Contains(e.guid));
                 cfg.retiredAsmdefGuids.RemoveAll(plan.clearRetiredAsmdefGuids.Contains);
             }
@@ -109,27 +177,10 @@ namespace Monome.UtilityPack.ModuleOrganizer
             if (EditorUtility.IsPersistent(cfg)) AssetDatabase.SaveAssetIfDirty(cfg);
         }
 
-        static void Edit(string path, TextEditOp op, List<string> errors)
-        {
-            var bytes = File.ReadAllBytes(path);
-            var bom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
-            var skip = bom ? 3 : 0;
-            var original = Utf8.GetString(bytes, skip, bytes.Length - skip); // non-UTF-8 file: throws, left untouched
-            var src = original;
-            if (op.setNamespace != null)
-            {
-                if (SourceRewriter.Parse(src).Rewritable) src = SourceRewriter.SetNamespace(src, op.setNamespace);
-                else errors.Add($"Namespace layout too complex to rewrite, namespace left as is: {path}");
-            }
-            foreach (var u in op.removeUsings) src = SourceRewriter.RemoveUsing(src, u);
-            foreach (var u in op.addUsings) src = SourceRewriter.AddUsing(src, u);
-            foreach (var (type, oldNs, oldAsm) in op.movedFrom)
-                if (!SourceRewriter.TryAddMovedFrom(src, type, oldNs, oldAsm, out src))
-                    errors.Add($"MovedFrom target not found: {type} in {path}");
-            if (src == original) return;
-            var body = Utf8.GetBytes(src);
-            File.WriteAllBytes(path, bom ? new byte[] { 0xEF, 0xBB, 0xBF }.Concat(body).ToArray() : body);
-        }
+        // After Refresh ask the database; without one (tests) the .meta on disk is the truth.
+        static bool Holds(AsmdefOp op, bool refresh) => refresh
+            ? AssetDatabase.AssetPathToGUID(op.path) == op.guid
+            : File.Exists(op.path + ".meta") && File.ReadAllText(op.path + ".meta").Contains("guid: " + op.guid);
 
         static string Meta(string guid) =>
             "fileFormatVersion: 2\nguid: " + guid + "\nAssemblyDefinitionImporter:\n  externalObjects: {}\n  userData: \n" +
