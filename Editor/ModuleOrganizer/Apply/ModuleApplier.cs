@@ -19,8 +19,9 @@ namespace Monome.UtilityPack.ModuleOrganizer
 
         public static List<string> Execute(ApplyPlan plan, ModuleConfig cfg, bool refresh = true) => Execute(plan, cfg, out _, refresh);
 
-        // touchedDisk: true once anything was really changed (folder created, file moved/written/deleted); false when it
-        // stopped before that (plan errors, preflight, or the first mutation failing).
+        // touchedDisk: true once the disk may have changed: a folder created, a move that succeeded (MoveAsset is atomic), or
+        // any write/delete attempted (a failed write may have truncated the file). False when it stopped before all of that
+        // (plan errors, preflight, a first folder or move that failed).
         public static List<string> Execute(ApplyPlan plan, ModuleConfig cfg, out bool touchedDisk, bool refresh = true)
         {
             touchedDisk = false;
@@ -66,13 +67,10 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         try
                         {
                             // New asmdef: its .meta goes down first, so the planned GUID is the one Unity imports it with.
-                            if (!File.Exists(op.path + ".meta"))
-                            {
-                                File.WriteAllText(op.path + ".meta", Meta(op.guid));
-                                touchedDisk = true;
-                            }
-                            File.WriteAllText(op.path, AsmdefJson.Write(op));
+                            // Writes and deletes count as touching disk once attempted: a failed write may have truncated the file.
                             touchedDisk = true;
+                            if (!File.Exists(op.path + ".meta")) File.WriteAllText(op.path + ".meta", Meta(op.guid));
+                            File.WriteAllText(op.path, AsmdefJson.Write(op));
                             done.Add(op);
                         }
                         catch (Exception e) { errors.Add($"Could not write {op.path}: {e.Message}"); }
@@ -80,24 +78,23 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     foreach (var (path, bytes) in texts)
                         try
                         {
-                            File.WriteAllBytes(path, bytes);
                             touchedDisk = true;
+                            File.WriteAllBytes(path, bytes);
                         }
                         catch (Exception e) { errors.Add($"Could not write {path}: {e.Message}"); }
 
                     foreach (var op in plan.asmdefs.Where(a => a.delete))
-                        if (AssetDatabase.DeleteAsset(op.path))
-                        {
-                            done.Add(op);
-                            touchedDisk = true;
-                        }
+                    {
+                        touchedDisk = true;
+                        if (AssetDatabase.DeleteAsset(op.path)) done.Add(op);
                         else errors.Add($"Could not delete {op.path}");
+                    }
 
                     foreach (var d in plan.deleteFoldersIfEmpty)
                     {
                         if (!Directory.Exists(d) || Directory.EnumerateFileSystemEntries(d).Any()) continue;
-                        if (AssetDatabase.DeleteAsset(d)) touchedDisk = true;
-                        else errors.Add($"Could not delete empty folder {d}");
+                        touchedDisk = true;
+                        if (!AssetDatabase.DeleteAsset(d)) errors.Add($"Could not delete empty folder {d}");
                     }
                 }
             }

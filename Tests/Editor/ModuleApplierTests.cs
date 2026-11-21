@@ -25,6 +25,8 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         public void TearDown()
         {
             Object.DestroyImmediate(cfg);
+            if (Directory.Exists(T))
+                foreach (var f in Directory.GetFiles(T, "*", SearchOption.AllDirectories)) File.SetAttributes(f, FileAttributes.Normal);
             AssetDatabase.DeleteAsset(T);
             if (Directory.Exists(T)) Directory.Delete(T, true);
             File.Delete(T + ".meta");
@@ -92,6 +94,17 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.That(errors.Single(), Does.StartWith("Could not move"));
             Assert.IsFalse(touched);
             Assert.IsTrue(File.Exists(T + "/raw.txt"));
+        }
+
+        [Test]
+        public void TouchedDisk_TrueWhenAWriteIsAttemptedAndFails()
+        {
+            var guid = Add(T + "/a.txt", "namespace Old { class A {} }");
+            File.SetAttributes(T + "/a.txt", FileAttributes.ReadOnly); // passes preflight (read), the write then throws
+            var errors = ModuleApplier.Execute(new ApplyPlan { edits = { new TextEditOp { guid = guid, setNamespace = "New" } } },
+                cfg, out var touched, refresh: false);
+            Assert.That(errors.Single(), Does.StartWith("Could not write"));
+            Assert.IsTrue(touched);
         }
 
         [Test]
