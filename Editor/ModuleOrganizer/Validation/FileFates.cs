@@ -69,6 +69,34 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return pending.TryGetValue(f.guid, out var p) && !string.IsNullOrEmpty(p.originalPath) ? PathRules.RestorePath(p, f.path) : null;
         }
 
+        // Final path: where Apply moves the file, else where it is.
+        public string FinalPath(ScriptFile f) => TargetPath(f) ?? f.path;
+
+        // Modules that have an asmdef after Apply (the planner writes or keeps it). It compiles every .cs under the folder.
+        public static bool HasAsmdef(Module m) => m.scripts.Count > 0 || !string.IsNullOrEmpty(m.asmdefGuid);
+
+        // The module whose asmdef compiles a file at path after Apply: the innermost such module folder holding it.
+        public Module CapturingModule(string path) => cfg.modules.Where(HasAsmdef).Where(m => PathRules.IsUnder(path, m.folder))
+            .OrderByDescending(m => PathRules.Norm(m.folder).Length).FirstOrDefault();
+
+        // Assembly the file compiles into now.
+        public string CurrentAssembly(ScriptFile f)
+        {
+            if (!string.IsNullOrEmpty(f.assemblyName)) return f.assemblyName;
+            switch (f.kind)
+            {
+                case AssemblyKind.Runtime: return "Assembly-CSharp";
+                case AssemblyKind.Editor: return "Assembly-CSharp-Editor";
+                case AssemblyKind.FirstPass: return "Assembly-CSharp-firstpass";
+                case AssemblyKind.FirstPassEditor: return "Assembly-CSharp-Editor-firstpass";
+                default:
+                    return f.declaredTypes.Select(t => scan.types.TryGetValue(t, out var r) ? r.assemblyName : null).FirstOrDefault(n => n != null)
+                           ?? "asmdef:" + f.asmdefGuid;
+            }
+        }
+
+        public string FinalAssembly(ScriptFile f) => TargetAssembly(f) ?? CurrentAssembly(f);
+
         // Assembly after Apply: the module asmdef, Assembly-CSharp(-Editor) for a restored file, else unchanged (null).
         public string TargetAssembly(ScriptFile f)
         {

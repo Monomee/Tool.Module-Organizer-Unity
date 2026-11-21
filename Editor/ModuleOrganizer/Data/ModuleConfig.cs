@@ -144,7 +144,34 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public static string TargetNamespace(Module m, string relativeDir, bool isEditor)
         {
             var ns = m.namespaceName + (isEditor ? ".Editor" : "");
-            return string.IsNullOrEmpty(relativeDir) ? ns : ns + "." + relativeDir.Replace('/', '.');
+            return string.IsNullOrEmpty(relativeDir) ? ns : ns + "." + string.Join(".", relativeDir.Split('/').Select(Identifier));
         }
+
+        static readonly HashSet<string> Keywords = new HashSet<string>
+        {
+            "abstract", "as", "base", "bool", "break", "byte", "case", "catch", "char", "checked", "class", "const", "continue",
+            "decimal", "default", "delegate", "do", "double", "else", "enum", "event", "explicit", "extern", "false", "finally",
+            "fixed", "float", "for", "foreach", "goto", "if", "implicit", "in", "int", "interface", "internal", "is", "lock",
+            "long", "namespace", "new", "null", "object", "operator", "out", "override", "params", "private", "protected",
+            "public", "readonly", "ref", "return", "sbyte", "sealed", "short", "sizeof", "stackalloc", "static", "string",
+            "struct", "switch", "this", "throw", "true", "try", "typeof", "uint", "ulong", "unchecked", "unsafe", "ushort",
+            "using", "virtual", "void", "volatile", "while",
+        };
+
+        // A folder name as a namespace segment, the way VS/Rider do it: invalid chars -> '_', and a '_' prefix when it
+        // does not start with a letter or '_' (a digit) or is a C# keyword.
+        public static string Identifier(string segment)
+        {
+            var s = new string((segment ?? "").Select(c => IsIdentChar(c) ? c : '_').ToArray());
+            return s.Length == 0 || !(char.IsLetter(s[0]) || s[0] == '_') || Keywords.Contains(s) ? "_" + s : s;
+        }
+
+        // Dot-separated identifiers, none a keyword.
+        public static bool IsValidNamespace(string ns) => !string.IsNullOrEmpty(ns) && ns.Split('.').All(s => s.Length > 0 && Identifier(s) == s);
+
+        static bool IsIdentChar(char c) => char.IsLetterOrDigit(c) || c == '_' || char.GetUnicodeCategory(c) is
+            System.Globalization.UnicodeCategory.NonSpacingMark or System.Globalization.UnicodeCategory.SpacingCombiningMark or
+            System.Globalization.UnicodeCategory.ConnectorPunctuation or System.Globalization.UnicodeCategory.Format or
+            System.Globalization.UnicodeCategory.LetterNumber;
     }
 }

@@ -153,7 +153,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             var wanted = new List<(Module m, bool editor, bool want)>();
             foreach (var m in cfg.modules)
             {
-                wanted.Add((m, false, m.scripts.Count > 0 || !string.IsNullOrEmpty(m.asmdefGuid)));
+                wanted.Add((m, false, FileFates.HasAsmdef(m)));
                 wanted.Add((m, true, files.Any(f => f.IsEditor && fates.ModuleOf(f) == m)));
             }
             var planned = new Dictionary<string, string>();

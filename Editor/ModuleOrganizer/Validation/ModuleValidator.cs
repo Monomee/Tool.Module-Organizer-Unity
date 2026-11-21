@@ -37,6 +37,16 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 var p = scan.files.TryGetValue(e.guid, out var df) ? df.path : e.guid;
                 Add(Severity.Error, IssueCode.DuplicateAssignment, p, $"{p} is assigned to both {first.name} and {second.name}.");
             }
+            foreach (var m in cfg.modules.Where(m => !PathRules.IsValidNamespace(m.namespaceName)))
+                Add(Severity.Error, IssueCode.InvalidNamespace, m.folder,
+                    $"Module {m.name}'s namespace '{m.namespaceName}' is not a valid C# namespace (dot-separated identifiers, no keywords).");
+            CheckAssemblyNames();
+            CheckCapture();
+            foreach (var kv in scan.duplicateTypes.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            foreach (var p in kv.Value.Where(cfg.IsInScope).Distinct())
+                Add(Severity.Error, IssueCode.DuplicateTypeName, p,
+                    $"{kv.Key} is declared in more than one script assembly ({string.Join(", ", kv.Value)}); the scan cannot tell them apart. Rename one.");
+            CheckInternalAccess();
             var edges = new Dictionary<(string, string), ModuleEdge>();
             var edgeTypes = new Dictionary<(string, string, string), string>(); // (from, to, path) -> first type used
 
@@ -53,12 +63,13 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 }
                 if (!editable)
                 {
-                    if (f.kind is AssemblyKind.Runtime or AssemblyKind.Editor or AssemblyKind.FirstPass or AssemblyKind.FirstPassEditor)
+                    // Predefined assemblies and user asmdefs: Apply never edits them.
+                    if (f.kind is AssemblyKind.Runtime or AssemblyKind.Editor or AssemblyKind.FirstPass or AssemblyKind.FirstPassEditor or AssemblyKind.AsmDef)
                     {
                         CheckReverseRefs(f);
                         foreach (var ns in fates.GoneNamespaces().Count == 0 ? new List<string>() : fates.FileUsings(f).Where(fates.GoneNamespaces().Contains))
                             Add(Severity.Error, IssueCode.ReverseRefOutOfScope, f.path,
-                                $"{f.path} (outside scope) has 'using {ns};', but Apply leaves no type in {ns}. Add the file's folder to the scope or remove the using.");
+                                $"{f.path} (read-only: outside scope or a user asmdef) has 'using {ns};', but Apply leaves no type in {ns}. Add the file's folder to the scope or remove the using.");
                     }
                     continue;
                 }
@@ -223,10 +234,80 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         if (tf == null || !Changes(tf, out var oldNs, out var newNs)) continue;
                         var owner = ModuleOf(tf);
                         Add(Severity.Error, IssueCode.ReverseRefOutOfScope, f.path,
-                            $"{f.path} (outside scope) uses {tn} from {tf.path}, whose namespace changes '{oldNs}' → '{newNs}'. Add the file's folder to the scope" +
+                            $"{f.path} (read-only: outside scope or a user asmdef) uses {tn} from {tf.path}, whose namespace changes '{oldNs}' → '{newNs}'. Add the file's folder to the scope" +
                             (owner != null ? $" or turn off rewriteNamespace for {owner.name}." : "."));
                         break;
                     }
+                }
+            }
+
+            // A module asmdef compiles every .cs under its folder: a file landing there that is not that module's gets no
+            // namespace edit, no MovedFrom and no validation. So does a file of a tool asmdef the config no longer lists.
+            void CheckCapture()
+            {
+                foreach (var f in files)
+                {
+                    var mine = ModuleOf(f);
+                    if (f.kind == AssemblyKind.AsmDef)
+                    {
+                        if (!OwnsAsmdef(cfg, f.asmdefGuid)) continue; // a user asmdef compiles it, not a module
+                        if (mine == null && !fates.pending.ContainsKey(f.guid))
+                        {
+                            Add(Severity.Error, IssueCode.CapturedByModule, f.path,
+                                $"{f.path} is compiled by a module asmdef but is neither assigned nor being removed: assign it or Sync first.");
+                            continue;
+                        }
+                    }
+                    var final = fates.FinalPath(f);
+                    var owner = fates.CapturingModule(final);
+                    if (owner == null || owner == mine) continue;
+                    var folder = PathRules.Norm(owner.folder);
+                    if (fates.pending.ContainsKey(f.guid))
+                        Add(Severity.Error, IssueCode.RestoreConflict, f.path,
+                            $"{f.path} goes back to {final}, inside module {owner.name}'s folder {folder}, whose asmdef would compile it: assign it to {owner.name} or move it out of {folder}.");
+                    else
+                        Add(Severity.Error, IssueCode.CapturedByModule, f.path,
+                            $"{final} is inside module {owner.name}'s folder, so its asmdef compiles it with no namespace edit or check: assign it to {owner.name} or move it out of {folder}.");
+                }
+            }
+
+            // Module asmdef names must not take a name another assembly has (asmdef, predefined, DLL) or another module's.
+            void CheckAssemblyNames()
+            {
+                var owned = new HashSet<string>(cfg.modules.SelectMany(m => new[] { m.asmdefGuid, m.editorAsmdefGuid }).Concat(cfg.retiredAsmdefGuids)
+                    .Where(g => !string.IsNullOrEmpty(g)));
+                var taken = new Dictionary<string, string>(); // name -> who has it
+                foreach (var kv in scan.assemblies)
+                    if (!owned.Contains(kv.Value ?? "")) taken[kv.Key] = "an existing assembly";
+                foreach (var t in scan.types.Values.Where(t => t.assemblyName != null && t.kind is AssemblyKind.AsmDef or AssemblyKind.Precompiled))
+                    if (!owned.Contains(t.asmdefGuid ?? "")) taken[t.assemblyName] = "an existing assembly";
+                foreach (var m in cfg.modules.Where(FileFates.HasAsmdef))
+                foreach (var editor in new[] { false, true })
+                {
+                    if (editor && !files.Any(f => f.IsEditor && IsAssignable(f, cfg) && ModuleOf(f) == m)) continue;
+                    var name = PathRules.AsmdefName(m, editor);
+                    if (taken.TryGetValue(name, out var who))
+                        Add(Severity.Error, IssueCode.AssemblyNameClash, m.folder,
+                            $"Module {m.name}'s asmdef name {name} is already used by {who}; change the module namespace.");
+                    else taken[name] = "module " + m.name;
+                }
+            }
+
+            // Internal types and members stay reachable only inside one assembly. Pairs whose assemblies Apply leaves
+            // alone are skipped: they compile today (InternalsVisibleTo, or one assembly) and keep doing so.
+            void CheckInternalAccess()
+            {
+                foreach (var f in files)
+                foreach (var tn in f.internalRefs.OrderBy(t => t, StringComparer.Ordinal))
+                {
+                    if (!scan.types.TryGetValue(tn, out var t) || t.filePaths.Count == 0) continue;
+                    var tf = FileAt(t.filePaths[0]);
+                    if (tf == null || tf == f) continue;
+                    var (from, to) = (fates.FinalAssembly(f), fates.FinalAssembly(tf));
+                    if (from == to || (from == fates.CurrentAssembly(f) && to == fates.CurrentAssembly(tf))) continue;
+                    Add(Severity.Error, IssueCode.InternalAccess, f.path,
+                        $"{f.path} uses non-public {tn} ({tf.path}), but after Apply they are in different assemblies ({from} / {to}). " +
+                        "Make it public or keep both files in one module (InternalsVisibleTo is not supported).");
                 }
             }
 

@@ -415,5 +415,129 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.AreEqual(S + "A.cs", i.path);
             Assert.IsFalse(r.CanApply);
         }
+
+        [Test]
+        public void UnassignedFileInsideModuleFolder_IsCapturedByModule()
+        {
+            var scan = Scan(F(S + "Weapon.cs", "w", AssemblyKind.Runtime, "Game.Weapon"),
+                F(S + "Combat/Stray.cs", "s", AssemblyKind.Runtime, "Game.Stray"));
+            Assign("Combat", scan, "w");
+            var r = Validate(scan);
+            var i = Single(r, IssueCode.CapturedByModule);
+            Assert.AreEqual(Severity.Error, i.severity);
+            Assert.AreEqual(S + "Combat/Stray.cs", i.path);
+            StringAssert.Contains("assign it to Combat or move it out of " + S + "Combat", i.message);
+            Assert.IsFalse(r.CanApply);
+
+            Assign("Combat", scan, "s");
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.CapturedByModule));
+        }
+
+        [Test]
+        public void ToolAsmdefFile_NeitherAssignedNorPending_IsCaptured()
+        {
+            var scan = Scan(F(S + "Combat/Stray.cs", "s", AssemblyKind.AsmDef, "Game.Combat.Stray"));
+            scan.files["s"].asmdefGuid = "a1";
+            cfg.AddModule("Combat").asmdefGuid = "a1";
+            var i = Single(Validate(scan), IssueCode.CapturedByModule);
+            Assert.AreEqual(Severity.Error, i.severity);
+            StringAssert.Contains("assign it or Sync first", i.message);
+        }
+
+        [Test]
+        public void PendingRemoval_RestoringIntoModuleFolder_IsRestoreConflict()
+        {
+            var scan = Scan(F(S + "Combat/Weapon.cs", "w", AssemblyKind.AsmDef, "Game.Combat.Weapon"),
+                F(S + "Combat/Armor.cs", "a", AssemblyKind.AsmDef, "Game.Combat.Armor"));
+            scan.files["w"].asmdefGuid = scan.files["a"].asmdefGuid = "a1";
+            var m = Assign("Combat", scan, "a");
+            m.asmdefGuid = "a1";
+            // It lived in the folder named like the module before the first Apply; unassigned, it goes back there.
+            cfg.pendingRemovals.Add(new ScriptEntry { guid = "w", originalPath = S + "Combat/Weapon.cs", originalNamespace = "Game", applied = true });
+            var i = Single(Validate(scan), IssueCode.RestoreConflict);
+            Assert.AreEqual(Severity.Error, i.severity);
+            StringAssert.Contains("move it out of " + S + "Combat", i.message);
+        }
+
+        [Test]
+        public void InvalidModuleNamespace_IsError_AndFolderSegmentsAreSanitized()
+        {
+            Assert.AreEqual("_1st", PathRules.Identifier("1st"));
+            Assert.AreEqual("My_Stuff", PathRules.Identifier("My Stuff"));
+            Assert.AreEqual("a_b", PathRules.Identifier("a-b"));
+            Assert.AreEqual("_class", PathRules.Identifier("class"));
+            Assert.AreEqual("Ok", PathRules.Identifier("Ok"));
+            Assert.AreEqual("Game.Combat._3D.My_Stuff", PathRules.TargetNamespace(new Module { namespaceName = "Game.Combat" }, "3D/My Stuff", false));
+            Assert.IsTrue(PathRules.IsValidNamespace("Game.Combat_2"));
+            foreach (var bad in new[] { "Game.1x", "Game..A", "Game.class", "Game Combat", "", "Game.A-B" })
+                Assert.IsFalse(PathRules.IsValidNamespace(bad), bad);
+
+            var scan = Scan(F(S + "A.cs", "a", AssemblyKind.Runtime, "Game.A"));
+            Assign("Combat", scan, "a").namespaceName = "Game.class";
+            var r = Validate(scan);
+            Assert.AreEqual(Severity.Error, Single(r, IssueCode.InvalidNamespace).severity);
+            Assert.IsFalse(r.CanApply);
+        }
+
+        [Test]
+        public void UserAsmdefFile_UsingATypeWhoseNamespaceChanges_IsReverseRefError()
+        {
+            var scan = Scan(F(S + "Combat/Weapon.cs", "w", AssemblyKind.AsmDef, "Game.Combat.Weapon"),
+                F("Assets/Lib/Tool.cs", "t", AssemblyKind.AsmDef, "Lib.Tool", "Game.Combat.Weapon"));
+            scan.files["w"].asmdefGuid = "a1";
+            scan.files["t"].asmdefGuid = "u1";
+            var m = Assign("Combat", scan, "w");
+            m.asmdefGuid = "a1";
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.ReverseRefOutOfScope));
+            m.namespaceName = "Game.Fight";
+            var i = Single(Validate(scan), IssueCode.ReverseRefOutOfScope);
+            Assert.AreEqual("Assets/Lib/Tool.cs", i.path);
+        }
+
+        [Test]
+        public void InternalUseAcrossTheNewBoundary_IsError()
+        {
+            var scan = Scan(F(S + "A.cs", "a", AssemblyKind.Runtime, "Game.A"),
+                F(S + "B.cs", "b", AssemblyKind.Runtime, "Game.B", "Game.A"));
+            scan.files["b"].internalRefs.Add("Game.A");
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.InternalAccess), "same assembly today, nothing moves");
+            Assign("Combat", scan, "a");
+            var i = Single(Validate(scan), IssueCode.InternalAccess);
+            Assert.AreEqual(Severity.Error, i.severity);
+            Assert.AreEqual(S + "B.cs", i.path);
+            StringAssert.Contains("InternalsVisibleTo is not supported", i.message);
+            Assign("Combat", scan, "b");
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.InternalAccess));
+        }
+
+        [Test]
+        public void DuplicateFullTypeName_IsErrorOnInScopeDeclarers()
+        {
+            var scan = Scan(F(S + "A.cs", "a", AssemblyKind.Runtime, "Game.A"));
+            scan.duplicateTypes["Game.A"] = new List<string> { S + "A.cs", "Assets/Vendor/A.cs" };
+            var i = Single(Validate(scan), IssueCode.DuplicateTypeName);
+            Assert.AreEqual(Severity.Error, i.severity);
+            Assert.AreEqual(S + "A.cs", i.path);
+        }
+
+        [Test]
+        public void ModuleAsmdefName_TakenByAnotherAssemblyOrModule_IsError()
+        {
+            var scan = Scan(F(S + "A.cs", "a", AssemblyKind.Runtime, "Game.A"), F(S + "B.cs", "b", AssemblyKind.Runtime, "Game.B"));
+            var combat = Assign("Combat", scan, "a");
+            combat.asmdefGuid = "own";
+            scan.assemblies["Game.Combat"] = "own"; // its own asmdef: fine
+            scan.assemblies["Assembly-CSharp"] = "";
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.AssemblyNameClash));
+
+            scan.assemblies["Game.UI"] = "userguid";
+            Assign("UI", scan, "b");
+            var i = Single(Validate(scan), IssueCode.AssemblyNameClash);
+            StringAssert.Contains("Game.UI", i.message);
+
+            scan.assemblies.Remove("Game.UI");
+            cfg.modules[1].namespaceName = "Game.Combat";
+            StringAssert.Contains("module Combat", Single(Validate(scan), IssueCode.AssemblyNameClash).message);
+        }
     }
 }

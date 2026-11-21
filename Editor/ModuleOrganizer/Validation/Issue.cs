@@ -9,6 +9,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
     {
         Cycle, OutOfScopeRef, UnassignedInScopeRef, NonAutoDll, PartialSplit, RuntimeToEditor, NameClash,
         ReverseRefOutOfScope, RestoreConflict, QualifiedName, MultiNamespace, AssemblyQualifiedString, DuplicateAssignment, PathConflict,
+        CapturedByModule, InternalAccess, InvalidNamespace, DuplicateTypeName, AssemblyNameClash, WriteBoundary,
     }
 
     public class Issue
