@@ -35,6 +35,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public List<string> scopeFolders = new List<string>();
         public string modulesRoot;
         public List<Module> modules = new List<Module>();
+        // Applied entries the user unassigned, or that belonged to a deleted module: Apply restores them to
+        // originalPath / originalNamespace (back in Assembly-CSharp(-Editor)).
+        public List<ScriptEntry> pendingRemovals = new List<ScriptEntry>();
+        // Runtime and Editor asmdef GUIDs of deleted modules; still tool-owned until Apply removes them.
+        public List<string> retiredAsmdefGuids = new List<string>();
 
         public string EffectiveModulesRoot =>
             !string.IsNullOrEmpty(modulesRoot) ? modulesRoot : (scopeFolders.Count > 0 ? scopeFolders[0] : "Assets");

@@ -8,7 +8,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
     public enum IssueCode
     {
         Cycle, OutOfScopeRef, UnassignedInScopeRef, NonAutoDll, PartialSplit, RuntimeToEditor, NameClash,
-        ReverseRefOutOfScope, RestoreConflict, QualifiedName, MultiNamespace, AssemblyQualifiedString,
+        ReverseRefOutOfScope, RestoreConflict, QualifiedName, MultiNamespace, AssemblyQualifiedString, DuplicateAssignment,
     }
 
     public class Issue
@@ -34,7 +34,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public List<Issue> issues = new List<Issue>();
         public List<ModuleEdge> edges = new List<ModuleEdge>();
         public List<List<string>> cycles = new List<List<string>>();
-        public Dictionary<string, HashSet<string>> asmdefRefs = new Dictionary<string, HashSet<string>>(); // node -> outside asmdef GUIDs
+        public Dictionary<string, HashSet<string>> asmdefRefs = new Dictionary<string, HashSet<string>>(); // node -> outside asmdef GUIDs (assembly name when the GUID is unknown)
         public bool CanApply => !issues.Any(i => i.severity == Severity.Error);
     }
 }

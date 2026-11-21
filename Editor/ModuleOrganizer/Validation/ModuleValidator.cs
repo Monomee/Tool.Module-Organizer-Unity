@@ -8,8 +8,10 @@ namespace Monome.UtilityPack.ModuleOrganizer
     // non-compiling project (spec 5.2-5.4).
     public static class ModuleValidator
     {
+        // Asmdefs of current modules, plus those of deleted modules that Apply has yet to remove.
         public static bool OwnsAsmdef(ModuleConfig cfg, string asmdefGuid) =>
-            !string.IsNullOrEmpty(asmdefGuid) && cfg.modules.Any(m => m.asmdefGuid == asmdefGuid || m.editorAsmdefGuid == asmdefGuid);
+            !string.IsNullOrEmpty(asmdefGuid) &&
+            (cfg.modules.Any(m => m.asmdefGuid == asmdefGuid || m.editorAsmdefGuid == asmdefGuid) || cfg.retiredAsmdefGuids.Contains(asmdefGuid));
 
         // Assembly-CSharp(-Editor) files in scope, plus files already in a tool-made asmdef. Everything else is read-only.
         public static bool IsAssignable(ScriptFile f, ModuleConfig cfg) =>
@@ -17,14 +19,33 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 ? OwnsAsmdef(cfg, f.asmdefGuid)
                 : (f.kind is AssemblyKind.Runtime or AssemblyKind.Editor) && cfg.IsInScope(f.path);
 
+        class FinalType
+        {
+            public string fullName, ns, where;
+            public bool changed;
+        }
+
         public static ValidationReport Validate(ModuleConfig cfg, ScanResult scan, Func<string, string> readSource)
         {
             var r = new ValidationReport();
             var files = scan.files.Values.OrderBy(f => f.path, StringComparer.Ordinal).ToList();
+            var byPath = new Dictionary<string, ScriptFile>();
+            foreach (var f in files) byPath[f.path] = f;
             var assigned = new Dictionary<string, (Module module, ScriptEntry entry)>();
             foreach (var m in cfg.modules)
             foreach (var e in m.scripts)
-                if (!assigned.ContainsKey(e.guid)) assigned[e.guid] = (m, e);
+            {
+                if (!assigned.TryGetValue(e.guid, out var first))
+                {
+                    assigned[e.guid] = (m, e);
+                    continue;
+                }
+                var p = scan.files.TryGetValue(e.guid, out var df) ? df.path : e.guid;
+                Add(Severity.Error, IssueCode.DuplicateAssignment, p, $"{p} is assigned to both {first.module.name} and {m.name}.");
+            }
+            var pending = new Dictionary<string, ScriptEntry>();
+            foreach (var e in cfg.pendingRemovals)
+                if (!assigned.ContainsKey(e.guid)) pending[e.guid] = e;
             var sources = new Dictionary<string, string>();
             var nsInfo = new Dictionary<string, NamespaceInfo>();
             var edges = new Dictionary<(string, string), ModuleEdge>();
@@ -54,8 +75,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 foreach (var tn in f.referencedTypes.OrderBy(t => t, StringComparer.Ordinal))
                 {
                     if (!scan.types.TryGetValue(tn, out var t)) continue;
-                    var c = ReferenceClassifier.Classify(f, t, cfg, scan);
-                    var tf = t.filePaths.Count > 0 ? scan.FileByPath(t.filePaths[0]) : null;
+                    var c = ReferenceClassifier.Classify(t, cfg, FileAt, ModuleOfGuid, module);
+                    var tf = t.filePaths.Count > 0 ? FileAt(t.filePaths[0]) : null;
                     var where = tf != null ? tf.path : t.assemblyName;
                     if (module == null)
                     {
@@ -77,7 +98,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
                             break;
                         case RefClass.UnassignedInScope:
                             Add(Severity.Error, IssueCode.UnassignedInScopeRef, f.path,
-                                $"{f.path} ({module.name}) uses {tn} from {where}, which is not assigned to a module; assign it too.");
+                                $"{f.path} ({module.name}) uses {tn} from {where}, which is not assigned to a module" +
+                                (pending.ContainsKey(tf.guid) ? " (it is being removed from its module)" : "") + "; assign it too.");
                             break;
                         case RefClass.OutOfScope:
                             Add(Severity.Error, IssueCode.OutOfScopeRef, f.path,
@@ -88,51 +110,68 @@ namespace Monome.UtilityPack.ModuleOrganizer
                                 $"{f.path} ({module.name}) uses {tn} from {t.assemblyName}, a precompiled DLL that is not auto-referenced.");
                             break;
                         case RefClass.OtherAsmdef:
-                            if (string.IsNullOrEmpty(t.asmdefGuid)) break;
+                            var asmRef = string.IsNullOrEmpty(t.asmdefGuid) ? t.assemblyName : t.asmdefGuid;
+                            if (string.IsNullOrEmpty(asmRef)) break;
                             var node = Node(f);
                             if (!r.asmdefRefs.TryGetValue(node, out var set)) set = r.asmdefRefs[node] = new HashSet<string>();
-                            set.Add(t.asmdefGuid);
+                            set.Add(asmRef);
                             break;
                     }
                 }
             }
 
-            var topLevel = scan.types.Values.Where(t => !t.fullName.Contains('/') && t.filePaths.Count > 0)
-                .OrderBy(t => t.fullName, StringComparer.Ordinal).ToList();
+            var topLevel = scan.types.Values.Where(t => !t.fullName.Contains('/')).OrderBy(t => t.fullName, StringComparer.Ordinal).ToList();
 
-            // Partial parts must end up in the same assembly.
+            // Partial parts must end up in the same assembly and the same namespace.
             foreach (var t in topLevel.Where(t => t.filePaths.Count > 1))
             {
-                var parts = t.filePaths.Select(p => scan.FileByPath(p)).Where(p => p != null).ToList();
-                if (parts.Select(p => ModuleOf(p)?.name).Distinct().Count() < 2) continue;
-                Add(Severity.Error, IssueCode.PartialSplit, parts[0].path,
-                    $"Partial type {t.fullName} is split: " + string.Join(", ", parts.Select(p => $"{p.path} ({ModuleOf(p)?.name ?? "unassigned"})")) + ".");
+                var parts = t.filePaths.Select(FileAt).Where(p => p != null)
+                    .Select(p => (file: p, module: ModuleOf(p)?.name ?? "unassigned", ns: FinalNs(p, t))).ToList();
+                if (parts.Select(p => (p.module, p.ns)).Distinct().Count() < 2) continue;
+                Add(Severity.Error, IssueCode.PartialSplit, parts[0].file.path,
+                    $"Partial type {t.fullName} is split: " + string.Join(", ", parts.Select(p => $"{p.file.path} ({p.module}, namespace '{p.ns}')")) + ".");
             }
 
-            // Final namespace of every source-declared type; two different types landing on the same name clash.
+            // Namespace of every type after Apply; two different types landing on the same name clash.
             var moved = new Dictionary<string, (string oldNs, string newNs)>();
-            var finals = new List<(TypeRecord type, string path, string ns, bool changed)>();
+            var finals = new Dictionary<string, FinalType>();
             foreach (var t in topLevel)
             {
-                var tf = scan.FileByPath(t.filePaths[0]);
-                if (tf == null) continue;
-                var changed = Changes(tf, out var oldNs, out var newNs);
-                if (changed) moved[t.fullName] = (oldNs, newNs);
-                finals.Add((t, tf.path, changed ? newNs : t.ns ?? "", changed));
+                var tf = t.filePaths.Count > 0 ? FileAt(t.filePaths[0]) : null;
+                var changed = tf != null && Changes(tf, out var oldNs, out var newNs) && moved.TryAdd(t.fullName, (oldNs, newNs));
+                finals[t.fullName] = new FinalType
+                {
+                    fullName = t.fullName, ns = changed ? moved[t.fullName].newNs : t.ns ?? "", where = tf?.path ?? t.assemblyName, changed = changed,
+                };
             }
-            foreach (var g in finals.GroupBy(x => (x.ns, SimpleName(x.type.fullName))))
+            var bySimpleName = finals.Values.ToLookup(x => SimpleName(x.fullName));
+            foreach (var g in finals.Values.GroupBy(x => (x.ns, SimpleName(x.fullName))))
             {
-                if (!g.Any(x => x.changed) || g.Select(x => x.type.fullName).Distinct().Count() < 2) continue;
-                Add(Severity.Error, IssueCode.NameClash, g.First(x => x.changed).path,
-                    $"Name clash in namespace '{g.Key.ns}': " + string.Join(", ", g.Select(x => $"{x.type.fullName} ({x.path})")) + ".");
+                if (!g.Any(x => x.changed) || g.Count() < 2) continue;
+                Add(Severity.Error, IssueCode.NameClash, g.First(x => x.changed).where,
+                    $"Name clash in namespace '{g.Key.ns}': " + string.Join(", ", g.Select(x => $"{x.fullName} ({x.where})")) + ".");
             }
 
-            // Text-level leftovers Apply will not rewrite.
             var movesAssembly = files.Any(f => ModuleOf(f) != null && (f.kind is AssemblyKind.Runtime or AssemblyKind.Editor));
             foreach (var f in files.Where(f => IsAssignable(f, cfg)))
             {
-                var uses = f.referencedTypes.Concat(f.declaredTypes).Select(n => n.Split('/')[0]).Distinct()
-                    .Where(moved.ContainsKey).ToList();
+                // A `using` Apply adds must not make a name F already resolves elsewhere ambiguous (CS0104).
+                var enclosing = new HashSet<string>((Changes(f, out _, out var ownNs) ? new List<string> { ownNs } : Info(f).namespaces)
+                    .SelectMany(Prefixes)) { "" };
+                var refs = f.referencedTypes.Select(Outer).Distinct().Where(finals.ContainsKey).OrderBy(n => n, StringComparer.Ordinal).ToList();
+                var added = new HashSet<string>(refs.Where(moved.ContainsKey).Select(n => moved[n].newNs).Where(n => !enclosing.Contains(n)));
+                foreach (var rn in added.Count == 0 ? new List<string>() : refs)
+                {
+                    var rNs = finals[rn].ns;
+                    if (enclosing.Contains(rNs)) continue;
+                    var other = bySimpleName[SimpleName(rn)].FirstOrDefault(x => x.ns != rNs && added.Contains(x.ns));
+                    if (other == null) continue;
+                    Add(Severity.Error, IssueCode.NameClash, f.path,
+                        $"{f.path} uses {rn}, but Apply adds 'using {other.ns};' which also has {SimpleName(rn)} ({other.fullName}, {other.where}); the name becomes ambiguous.");
+                }
+
+                // Text-level leftovers Apply will not rewrite.
+                var uses = f.referencedTypes.Concat(f.declaredTypes).Select(Outer).Distinct().Where(moved.ContainsKey).ToList();
                 foreach (var g in uses.GroupBy(n => moved[n].oldNs).Where(g => g.Key.Length > 0))
                 {
                     var lines = SourceRewriter.FindQualifiedUses(Source(f), g.Key, g.Select(SimpleName).Select(StripArity).Distinct());
@@ -158,7 +197,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
             return r;
 
-            Module ModuleOf(ScriptFile f) => assigned.TryGetValue(f.guid, out var a) ? a.module : null;
+            ScriptFile FileAt(string path) => byPath.TryGetValue(PathRules.Norm(path), out var f) ? f : null;
+
+            Module ModuleOfGuid(string guid) => assigned.TryGetValue(guid, out var a) ? a.module : null;
+
+            Module ModuleOf(ScriptFile f) => ModuleOfGuid(f.guid);
 
             string Node(ScriptFile f) => ModuleOf(f).name + (f.IsEditor ? ".Editor" : "");
 
@@ -174,15 +217,26 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 return i;
             }
 
-            // Whether Apply will change this file's namespace. Files it cannot rewrite keep theirs.
+            string FinalNs(ScriptFile f, TypeRecord t) => Changes(f, out _, out var n) ? n : t.ns ?? "";
+
+            // Whether Apply will change this file's namespace: to the module's target namespace, or back to
+            // originalNamespace for a pending removal. Files it cannot rewrite keep theirs.
             bool Changes(ScriptFile f, out string oldNs, out string newNs)
             {
                 oldNs = newNs = null;
-                if (!assigned.TryGetValue(f.guid, out var a) || !a.module.rewriteNamespace || !IsAssignable(f, cfg) || !Info(f).Rewritable)
-                    return false;
+                if (!IsAssignable(f, cfg)) return false;
+                string target;
+                if (assigned.TryGetValue(f.guid, out var a))
+                {
+                    if (!a.module.rewriteNamespace) return false;
+                    var original = string.IsNullOrEmpty(a.entry.originalPath) ? f.path : a.entry.originalPath;
+                    target = PathRules.TargetNamespace(a.module, PathRules.ScopeRelativeDir(original, cfg.scopeFolders), f.IsEditor);
+                }
+                else if (pending.TryGetValue(f.guid, out var p) && p.originalNamespace != null) target = p.originalNamespace;
+                else return false;
+                if (!Info(f).Rewritable) return false;
                 oldNs = Info(f).IsGlobal ? "" : Info(f).namespaces[0];
-                var original = string.IsNullOrEmpty(a.entry.originalPath) ? f.path : a.entry.originalPath;
-                newNs = PathRules.TargetNamespace(a.module, PathRules.ScopeRelativeDir(original, cfg.scopeFolders), f.IsEditor);
+                newNs = target;
                 return newNs != oldNs;
             }
 
@@ -192,11 +246,15 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 foreach (var tn in f.referencedTypes.OrderBy(t => t, StringComparer.Ordinal))
                 {
                     if (!scan.types.TryGetValue(tn, out var t)) continue;
-                    var tf = t.filePaths.Select(p => scan.FileByPath(p)).FirstOrDefault(p => p != null && ModuleOf(p) != null);
-                    if (tf == null || !Changes(tf, out var oldNs, out var newNs)) continue;
-                    Add(Severity.Error, IssueCode.ReverseRefOutOfScope, f.path,
-                        $"{f.path} (outside scope) uses {tn} from {tf.path}, whose namespace changes '{oldNs}' → '{newNs}'. " +
-                        $"Add the file's folder to the scope or turn off rewriteNamespace for {ModuleOf(tf).name}.");
+                    foreach (var tf in t.filePaths.Select(FileAt))
+                    {
+                        if (tf == null || !Changes(tf, out var oldNs, out var newNs)) continue;
+                        var owner = ModuleOf(tf);
+                        Add(Severity.Error, IssueCode.ReverseRefOutOfScope, f.path,
+                            $"{f.path} (outside scope) uses {tn} from {tf.path}, whose namespace changes '{oldNs}' → '{newNs}'. Add the file's folder to the scope" +
+                            (owner != null ? $" or turn off rewriteNamespace for {owner.name}." : "."));
+                        break;
+                    }
                 }
             }
 
@@ -213,8 +271,17 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 r.issues.Add(new Issue { severity = severity, code = code, path = path, message = message });
         }
 
+        static string Outer(string typeName) => typeName.Split('/')[0];
+
         static string SimpleName(string fullName) => fullName.Substring(fullName.LastIndexOf('.') + 1); // keeps `1: Box`1 != Box
 
         static string StripArity(string name) => name.Split('`')[0];
+
+        // "A.B.C" -> "A.B.C", "A.B", "A"
+        static IEnumerable<string> Prefixes(string ns)
+        {
+            for (var n = ns; !string.IsNullOrEmpty(n); n = n.Contains('.') ? n.Substring(0, n.LastIndexOf('.')) : "")
+                yield return n;
+        }
     }
 }

@@ -184,6 +184,7 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.IsTrue(ModuleValidator.IsAssignable(scan.files["e"], cfg));
             var r = Validate(scan);
             Assert.AreEqual(Severity.Error, Single(r, IssueCode.RuntimeToEditor).severity);
+            Assert.IsFalse(r.CanApply);
         }
 
         [Test]
@@ -212,6 +213,10 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.IsEmpty(r.issues);
             Assert.IsTrue(r.CanApply);
             CollectionAssert.AreEquivalent(new[] { "libguid" }, r.asmdefRefs["Combat"]);
+
+            scan.types["Lib.NoGuid"] = new TypeRecord { fullName = "Lib.NoGuid", ns = "Lib", kind = AssemblyKind.AsmDef, assemblyName = "Lib.Runtime" };
+            scan.files["a"].referencedTypes.Add("Lib.NoGuid");
+            CollectionAssert.AreEquivalent(new[] { "libguid", "Lib.Runtime" }, Validate(scan).asmdefRefs["Combat"]);
         }
 
         [Test]
@@ -272,6 +277,108 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             var i = Single(r, IssueCode.OutOfScopeRef);
             Assert.AreEqual(Severity.Error, i.severity);
             Assert.AreEqual(S + "Third/T.cs", i.path);
+        }
+
+        [Test]
+        public void PartialSplitAcrossTwoModules_IsError()
+        {
+            var scan = Scan(F(S + "P.Part1.cs", "p1", AssemblyKind.Runtime, "Game.P"),
+                F(S + "P.Part2.cs", "p2", AssemblyKind.Runtime, "Game.P"));
+            Assign("Combat", scan, "p1");
+            Assign("UI", scan, "p2");
+            var r = Validate(scan);
+            Assert.AreEqual(Severity.Error, Single(r, IssueCode.PartialSplit).severity);
+            Assert.IsFalse(r.CanApply);
+        }
+
+        [Test]
+        public void PartialPartsInDifferentTargetNamespaces_IsError()
+        {
+            var scan = Scan(F(S + "A/P1.cs", "p1", AssemblyKind.Runtime, "Game.P"),
+                F(S + "B/P2.cs", "p2", AssemblyKind.Runtime, "Game.P"));
+            Assign("Combat", scan, "p1", "p2");
+            var r = Validate(scan);
+            StringAssert.Contains("Game.Combat.B", Single(r, IssueCode.PartialSplit).message);
+            Assert.IsFalse(r.CanApply);
+        }
+
+        [Test]
+        public void PartialPartNotRewritable_SplitsNamespace_IsError()
+        {
+            var scan = Scan(F(S + "P1.cs", "p1", AssemblyKind.Runtime, "Game.P"),
+                F(S + "P2.cs", "p2", AssemblyKind.Runtime, "Game.P"));
+            sources[S + "P2.cs"] = "namespace Game { partial class P {} }\nnamespace Other { class Y {} }\n";
+            Assign("Combat", scan, "p1", "p2");
+            var r = Validate(scan);
+            Assert.AreEqual(Severity.Error, Single(r, IssueCode.PartialSplit).severity);
+            Assert.AreEqual(Severity.Warning, Single(r, IssueCode.MultiNamespace).severity);
+        }
+
+        [Test]
+        public void MovingIntoNamespaceWithExistingSameName_IsNameClash()
+        {
+            var scan = Scan(F(S + "Existing/Foo.cs", "e", AssemblyKind.Runtime, "Game.Combat.Foo"),
+                F(S + "Foo.cs", "f", AssemblyKind.Runtime, "Game.Old.Foo"));
+            Assign("Combat", scan, "f");
+            var r = Validate(scan);
+            var i = Single(r, IssueCode.NameClash);
+            Assert.AreEqual(S + "Foo.cs", i.path);
+            StringAssert.Contains(S + "Existing/Foo.cs", i.message);
+            Assert.IsFalse(r.CanApply);
+        }
+
+        [Test]
+        public void AddedUsing_MakingNameAmbiguous_IsNameClash()
+        {
+            var scan = Scan(F(S + "Weapon.cs", "w", AssemblyKind.Runtime, "Game.Weapon"),
+                F(S + "Foo.cs", "f", AssemblyKind.Runtime, "Game.Stuff.Foo"),
+                F(S + "UI/User.cs", "u", AssemblyKind.Runtime, "Game.UI.User", "Game.Weapon", "Lib.Foo"));
+            scan.types["Lib.Foo"] = new TypeRecord { fullName = "Lib.Foo", ns = "Lib", kind = AssemblyKind.AsmDef, asmdefGuid = "lib" };
+            Assign("Combat", scan, "w");
+            Assert.IsTrue(Validate(scan).CanApply); // Foo stays in Game.Stuff: `using Game.Combat;` adds no second Foo
+
+            Assign("Combat", scan, "f");
+            var r = Validate(scan);
+            var i = Single(r, IssueCode.NameClash);
+            Assert.AreEqual(S + "UI/User.cs", i.path);
+            StringAssert.Contains("Game.Combat", i.message);
+            Assert.IsFalse(r.CanApply);
+        }
+
+        [Test]
+        public void PendingRemoval_OfRetiredModule_IsUnassigned_AndRestoresNamespace()
+        {
+            var scan = Scan(F("Assets/Modules/Old/X.cs", "x", AssemblyKind.AsmDef, "Game.Old.X"),
+                F(S + "A.cs", "a", AssemblyKind.Runtime, "Game.A", "Game.Old.X"),
+                F("Assets/Legacy/L.cs", "l", AssemblyKind.Runtime, "L", "Game.Old.X"));
+            scan.files["x"].asmdefGuid = scan.types["Game.Old.X"].asmdefGuid = "oldguid";
+            cfg.retiredAsmdefGuids.Add("oldguid");
+            var entry = new ScriptEntry { guid = "x", originalPath = S + "X.cs", originalNamespace = "Game", applied = true };
+            cfg.pendingRemovals.Add(entry);
+            Assert.IsTrue(ModuleValidator.IsAssignable(scan.files["x"], cfg));
+            Assign("Combat", scan, "a");
+            Assert.AreEqual(RefClass.UnassignedInScope, ReferenceClassifier.Classify(scan.files["a"], scan.types["Game.Old.X"], cfg, scan));
+
+            var r = Validate(scan);
+            Assert.AreEqual(Severity.Error, Single(r, IssueCode.UnassignedInScopeRef).severity);
+            Assert.AreEqual("Assets/Legacy/L.cs", Single(r, IssueCode.ReverseRefOutOfScope).path);
+            Assert.IsFalse(r.asmdefRefs.ContainsKey("Combat"));
+
+            entry.originalNamespace = "Game.Old";
+            Assert.IsFalse(Validate(scan).issues.Any(i => i.code == IssueCode.ReverseRefOutOfScope));
+        }
+
+        [Test]
+        public void GuidInTwoModules_IsDuplicateAssignment()
+        {
+            var scan = Scan(F(S + "A.cs", "a", AssemblyKind.Runtime, "Game.A"));
+            Assign("Combat", scan, "a");
+            Assign("UI", scan, "a");
+            var r = Validate(scan);
+            var i = Single(r, IssueCode.DuplicateAssignment);
+            Assert.AreEqual(Severity.Error, i.severity);
+            Assert.AreEqual(S + "A.cs", i.path);
+            Assert.IsFalse(r.CanApply);
         }
     }
 }
