@@ -23,6 +23,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public string name;
         public string rootNamespace;
         public bool editorOnly;
+        public bool allowUnsafeCode; // some file of the module (runtime or Editor side) uses `unsafe`
         public List<string> references = new List<string>(); // "GUID:..." (planned GUIDs included) or an assembly name
         public bool delete;
         public string moduleName; // null for a retired asmdef
@@ -209,6 +210,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 {
                     path = PathRules.AsmdefPath(m, editor), guid = guid, name = name, rootNamespace = name,
                     editorOnly = editor, references = ComputeReferences(m, editor, report, cfg, planned), moduleName = m.name,
+                    allowUnsafeCode = files.Any(f => f.IsEditor == editor && fates.ModuleOf(f) == m &&
+                                                     disk.sourceByGuid.TryGetValue(f.guid, out var src) && UsesUnsafe(src)),
                 };
                 if (string.Equals(cur, op.path, StringComparison.Ordinal))
                 {
@@ -398,6 +401,12 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 return !string.IsNullOrEmpty(guid) ? "GUID:" + guid : PathRules.AsmdefName(t, ed);
             }
         }
+
+        static readonly Regex UnsafeRx = new Regex(@"(?<![\w@])unsafe(?!\w)", RegexOptions.Compiled);
+
+        // `unsafe` in code (comments and literals masked, every #if branch kept).
+        internal static bool UsesUnsafe(string src) =>
+            src != null && UnsafeRx.IsMatch(DeclarationFinder.Strip(src, null, new bool[src.Length]));
 
         internal static string NormRef(string r) => r != null && GuidRx.IsMatch(r) ? "GUID:" + r : r;
 

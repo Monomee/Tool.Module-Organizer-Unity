@@ -787,5 +787,49 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assign("Alpha", "u");
             Assert.IsEmpty(Plan().edits.Single(x => x.guid == "u").aliases);
         }
+
+        [Test]
+        public void PolyfillMoved_UsingOfItsBclNamespace_IsKept()
+        {
+            // MethodImpl is a pseudo-attribute: the scan names it, but has no record for it (no type in scan.types).
+            const string ns = "System.Runtime.CompilerServices";
+            Add(S + "IsExternalInit.cs", "p", ns + ".IsExternalInit");
+            Add(S + "User.cs", "u", "Game.User", ns + ".IsExternalInit", ns + ".MethodImplAttribute");
+            disk.sourceByGuid["u"] = "using " + ns + ";\n\nnamespace Game\n{\n    class User {}\n}\n";
+            Assign("Combat", "p");
+            var p = Plan();
+            Assert.AreEqual("Game.Combat", p.edits.Single(x => x.guid == "p").setNamespace);
+            CollectionAssert.DoesNotContain(p.edits.Single(x => x.guid == "u").removeUsings, ns);
+        }
+
+        [Test]
+        public void ModuleUsingUnsafe_GetsAllowUnsafeCode_PerSide()
+        {
+            Add(S + "Weapon.cs", "w", "Weapon");
+            Add(S + "Editor/WeaponEditor.cs", "e", true, "WeaponEditor", "Weapon");
+            disk.sourceByGuid["w"] = "class Weapon\n{\n    unsafe void F(int* p) { }\n}\n";
+            disk.sourceByGuid["e"] = "// not unsafe here\nclass WeaponEditor { string s = \"unsafe\"; }\n";
+            Assign("Combat", "w", "e");
+            var p = Plan();
+            Assert.IsTrue(p.asmdefs.Single(a => !a.editorOnly).allowUnsafeCode);
+            Assert.IsFalse(p.asmdefs.Single(a => a.editorOnly).allowUnsafeCode, "comments and strings do not count");
+            StringAssert.Contains("\"allowUnsafeCode\": true", AsmdefJson.Write(p.asmdefs.Single(a => !a.editorOnly)));
+        }
+
+        [Test]
+        public void PathsOutsideScopeAndModulesRoot_AreWriteBoundaryErrors()
+        {
+            Add(S + "Weapon.cs", "w", "Weapon");
+            var m = Assign("Combat", "w");
+            m.folder = "Assets/Elsewhere/Combat";
+            var p = Plan();
+            Assert.IsTrue(p.issues.Any(i => i.code == IssueCode.WriteBoundary && i.severity == Severity.Error && i.path == "Assets/Elsewhere/Combat/Weapon.cs"), Describe(p));
+            Assert.IsTrue(p.issues.Any(i => i.code == IssueCode.WriteBoundary && i.path == "Assets/Elsewhere/Combat/Game.Combat.asmdef"), Describe(p));
+
+            m.folder = S + "../Elsewhere/Combat";
+            Assert.IsTrue(Plan().issues.Any(i => i.code == IssueCode.WriteBoundary), "a .. segment is not inside the scope");
+            m.folder = S + "Combat";
+            Assert.IsEmpty(Plan().issues);
+        }
     }
 }

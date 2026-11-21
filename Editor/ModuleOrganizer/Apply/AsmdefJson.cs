@@ -15,7 +15,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             Array(sb, "references", op.references);
             Array(sb, "includePlatforms", op.editorOnly ? new List<string> { "Editor" } : null);
             Array(sb, "excludePlatforms", null);
-            sb.Append("    \"allowUnsafeCode\": false,\n");
+            sb.Append("    \"allowUnsafeCode\": ").Append(op.allowUnsafeCode ? "true" : "false").Append(",\n");
             sb.Append("    \"overrideReferences\": false,\n");
             Array(sb, "precompiledReferences", null);
             sb.Append("    \"autoReferenced\": true,\n");
