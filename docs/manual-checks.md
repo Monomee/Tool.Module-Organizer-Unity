@@ -53,3 +53,30 @@ Player-only error path:
 Cleanup:
 
 12. Delete `Assets/ProbeTmp` (and its `.meta`). `git status` in `TestHost~` shows nothing.
+
+## Task 11 — Module Organizer window
+
+Open `TestHost~` in the Unity Editor (no compile errors). Steps 1-7 are also covered headlessly by
+`ModuleOrganizerWindowTests.Scenario_IssuesGateApply_UndoRevertsAssign` (without the mouse); this check is for the real
+drag and drop, layout and dialogs.
+
+1. **Tools > Monome > Module Organizer**. Expected: HelpBox "No ModuleConfig yet", toolbar shows **Create ModuleConfig**
+   (no config dropdown), Scan disabled.
+2. Click **Create ModuleConfig**. Expected: `Assets/ModuleConfig.asset` is created and selected in the dropdown; the scan
+   runs, the HelpBox disappears and the tree header reads `Unassigned (0)` (no scope yet).
+3. Click **+** next to *Scope*, pick `Assets/_Fixtures/Scope`. Expected: it is listed; the tree shows
+   `Assets/_Fixtures/Scope/` with `Editor/` and the `Fx*.cs` files (`FxAEditor.cs` has an `ed` badge). Picking a folder
+   outside `Assets/` shows "Scope folders must be inside Assets/."
+4. Click **+ Module**, select the card, rename it `Alpha` in the panel (Enter). Expected: card title `Alpha`, namespace
+   `Game.NewModule` stays until edited (set it to `Game.Alpha`).
+5. Drag `FxA.cs` from the tree onto the Alpha card. Expected: FxA leaves the tree and appears in the card with ✗;
+   Issues tab lists `✗ [OutOfScopeRef] ... FxOut ...` and `✗ [UnassignedInScopeRef] ... FxB ...` (also FxLambdaOnly);
+   Apply is disabled (tooltip "Fix the Error issues first.").
+6. Ctrl+Z. Expected: FxA is back in the tree, issues gone. Ctrl+Y to redo it.
+7. Drag `FxB.cs` and `FxLambdaOnly.cs` (multi-select, one drag) onto Alpha; add scope `Assets/_Fixtures/Outside`, drag
+   `FxOut.cs` onto Alpha. Expected: no Error issues, Plan tab lists the moves into `Assets/_Fixtures/Scope/Alpha`,
+   asmdef `Game.Alpha.asmdef` and the namespace edits; **Apply** is enabled.
+8. Drag `FxB.cs` from the Alpha card back onto the tree. Expected: it is unassigned (draft: no "↩" pending styling) and
+   the FxB error is back. Drag the `Scope/` folder node onto Alpha: every unassigned file under it is assigned.
+9. Clean up without applying: Ctrl+Z back to step 2's state, delete `Assets/ModuleConfig.asset`. `git status` in
+   `TestHost~` shows nothing.

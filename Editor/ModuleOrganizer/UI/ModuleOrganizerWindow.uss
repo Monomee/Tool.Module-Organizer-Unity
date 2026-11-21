@@ -1,0 +1,38 @@
+.grow { flex-grow: 1; }
+.row { flex-direction: row; }
+.spacer { flex-grow: 1; }
+.pane { padding: 4px; }
+.header { -unity-font-style: bold; margin: 4px 2px 2px 2px; }
+
+#toolbar DropdownField { min-width: 220px; margin: 0 4px; }
+#status { margin: 2px 4px; }
+#tabs { flex-grow: 1; }
+#tabs ScrollView { flex-grow: 1; padding: 2px 6px; }
+
+#module-panel { width: 280px; border-left-width: 1px; border-color: rgba(0, 0, 0, 0.3); }
+#m-delete { margin-top: 8px; }
+
+#cards { flex-direction: row; flex-wrap: wrap; padding: 4px; }
+.card {
+    width: 220px;
+    margin: 4px;
+    padding: 2px;
+    border-width: 2px;
+    border-radius: 4px;
+    background-color: rgba(0, 0, 0, 0.1);
+}
+.card--selected { background-color: rgba(80, 140, 255, 0.18); }
+.card-title { -unity-font-style: bold; }
+.card-ns { font-size: 10px; color: rgb(150, 150, 150); }
+
+.script-row { flex-direction: row; align-items: center; }
+.script-row > .name { flex-grow: 1; overflow: hidden; }
+.badge { font-size: 9px; padding: 0 3px; border-radius: 3px; background-color: rgba(120, 120, 120, 0.4); margin-left: 2px; }
+.sev-Error { color: rgb(255, 90, 80); }
+.sev-Warning { color: rgb(240, 190, 60); }
+.pending { -unity-font-style: italic; color: rgb(150, 150, 150); }
+
+.scope-row { flex-direction: row; align-items: center; }
+.scope-row > Label { flex-grow: 1; }
+.line { white-space: normal; margin: 1px 0; }
+.section { -unity-font-style: bold; margin-top: 6px; }
