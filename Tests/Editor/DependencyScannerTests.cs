@@ -61,6 +61,16 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void InactiveMethodlessAndPartialDeclarations_AreNotMapped()
+        {
+            CollectionAssert.AreEqual(new[] { "Assets/_Fixtures/Scope/FxB.cs" }, S.types["FxColor"].filePaths);
+            CollectionAssert.AreEquivalent(
+                new[] { "Assets/_Fixtures/Scope/FxPartial.Part1.cs", "Assets/_Fixtures/Scope/FxPartial.Part2.cs" },
+                S.types["FxPartial"].filePaths);
+            CollectionAssert.AreEqual(new[] { "Assets/_Fixtures/Scope/FxInactiveDecls.cs" }, S.types["FxActiveBranch"].filePaths);
+        }
+
+        [Test]
         public void LambdaReference_FoldsIntoOuterTypeFile()
         {
             CollectionAssert.Contains(F("Scope/FxA.cs").referencedTypes, "FxLambdaOnly");

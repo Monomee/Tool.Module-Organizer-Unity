@@ -61,14 +61,14 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 {
                     if (!a.sourceFiles.Any(p => p.StartsWith("Assets/", StringComparison.Ordinal))) continue;
                     var files = new Dictionary<string, ScriptFile>();
-                    var declared = new List<(TypeRecord rec, string src, bool partial)>();
                     foreach (var src in a.sourceFiles.Select(PathRules.Norm))
                     {
                         if (!File.Exists(src)) continue; // deleted since the last compile
                         var f = files[src] = new ScriptFile { guid = AssetDatabase.AssetPathToGUID(src), path = src, kind = kinds[a.name] };
                         result.files[f.guid] = f;
-                        foreach (var d in DeclarationFinder.Find(File.ReadAllText(src)))
-                            if (Own(d.Key, out var rec)) declared.Add((rec, src, d.Value.StartsWith("partial ", StringComparison.Ordinal)));
+                        // Evaluated with the assembly's defines, so declarations in inactive #if branches add no file.
+                        foreach (var name in DeclarationFinder.Find(File.ReadAllText(src), a.defines).Keys)
+                            if (Own(name, out var rec)) AddPath(rec, src);
                     }
 
                     var types = def.MainModule.GetTypes().ToList();
@@ -82,11 +82,6 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         if (Own(Outermost(t).FullName, out var outer)) AddPath(outer, path);
                         if (Own(t.FullName, out var rec)) AddPath(rec, path);
                     }
-
-                    // The PDB is the authority. Source declarations only place types without sequence points
-                    // (enums, interfaces, delegates, field-only types) and partial parts (a field-only part has no
-                    // sequence points), so a non-partial copy inside an inactive #if adds no file.
-                    foreach (var (rec, src, _) in declared.Where(d => d.partial || d.rec.filePaths.Count == 0).ToList()) AddPath(rec, src);
 
                     foreach (var rec in result.types.Values.Where(r => r.assemblyName == a.name))
                     foreach (var p in rec.filePaths)
