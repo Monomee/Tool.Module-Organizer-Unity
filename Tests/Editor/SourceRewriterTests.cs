@@ -247,6 +247,16 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void AddMovedFrom_UnconditionalPartialWinsOverConditional()
+        {
+            const string P = "partial class P {}\n";
+            Assert.AreEqual("#if X\n" + P + "#endif\n" + MF + "\n" + P,
+                SourceRewriter.AddMovedFrom("#if X\n" + P + "#endif\n" + P, "P", "", "A"));
+            Assert.AreEqual(MF + "\n" + P + "#if X\n" + P + "#endif\n",
+                SourceRewriter.AddMovedFrom(P + "#if X\n" + P + "#endif\n", "P", "", "A"));
+        }
+
+        [Test]
         public void FindQualifiedUses_IgnoresCommentsStringsAndNearMisses()
         {
             var src = "// Old.Gun\nclass X {\n  string s = \"Old.Gun\";\n  OldX.Gun a; Old.GunX b; Game.Old.Gun c;\n  global::Old.Gun d;\n  Old . Gun e;\n}";

@@ -347,14 +347,17 @@ namespace Monome.UtilityPack.ModuleOrganizer
             bool IsPartial(int kw) { var st = DeclStart(s.mask, kw, false); return PartialRx.IsMatch(s.mask.Substring(st, kw - st)); }
             // Non-partial declarations are #if alternatives: each gets one. Partial parts are one type, so exactly one
             // part per preprocessor configuration may carry it (else CS0579): a part is annotated only when it is
-            // mutually exclusive (same #if group, different branch) with every part already carrying it.
+            // mutually exclusive (same #if group, different branch) with every part already carrying it. Parts are visited
+            // least-conditional first (fewest enclosing #if groups, then source order) so an unconditional part wins.
+            // ponytail: parts only in independent groups (#if X ... #endif #if Y ... #endif, no unconditional part) get
+            // one annotation, so configurations with !X lack MovedFrom; covering them needs a part per configuration.
             var paths = s.BranchPaths();
             bool Exclusive(Match a, Match b) => paths[s.LineOf(a.Index)]
                 .Any(x => paths[s.LineOf(b.Index)].Any(y => y.id == x.id && y.branch != x.branch));
             var partials = decls.Where(m => IsPartial(m.Index)).ToList();
             var targets = decls.Where(m => !partials.Contains(m) && !Has(m.Index)).ToList();
             var annotated = partials.Where(m => Has(m.Index)).ToList();
-            foreach (var m in partials)
+            foreach (var m in partials.OrderBy(m => paths[s.LineOf(m.Index)].Count)) // stable: ties keep source order
                 if (!Has(m.Index) && annotated.All(a => Exclusive(a, m)))
                 {
                     annotated.Add(m);
