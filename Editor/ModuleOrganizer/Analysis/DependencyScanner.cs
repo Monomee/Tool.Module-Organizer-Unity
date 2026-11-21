@@ -43,9 +43,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 foreach (var (a, def) in loaded)
                 {
                     var kind = kinds[a.name];
-                    var asmdefGuid = asmdefGuids[a.name] = kind == AssemblyKind.AsmDef
-                        ? AssetDatabase.AssetPathToGUID(CompilationPipeline.GetAssemblyDefinitionFilePathFromAssemblyName(a.name))
-                        : null;
+                    var asmdefPath = kind == AssemblyKind.AsmDef ? CompilationPipeline.GetAssemblyDefinitionFilePathFromAssemblyName(a.name) : null;
+                    var asmdefGuid = asmdefGuids[a.name] = asmdefPath != null ? AssetDatabase.AssetPathToGUID(asmdefPath) : null;
+                    var notAuto = asmdefPath != null && File.Exists(asmdefPath) &&
+                                  System.Text.RegularExpressions.Regex.IsMatch(File.ReadAllText(asmdefPath), @"""autoReferenced""\s*:\s*false");
+                    var editorOnly = kind == AssemblyKind.AsmDef && a.flags.HasFlag(AssemblyFlags.EditorAssembly);
                     foreach (var t in def.MainModule.GetTypes())
                     {
                         if (t.FullName.Contains('<')) continue;
@@ -53,6 +55,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         {
                             fullName = t.FullName, ns = Outermost(t).Namespace, assemblyName = a.name, kind = kind,
                             asmdefGuid = asmdefGuid, serializableNonUnityObject = t.IsSerializable && !IsUnityObject(t),
+                            notAutoReferenced = notAuto, editorOnly = editorOnly,
                         };
                     }
                 }

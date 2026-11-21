@@ -14,6 +14,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public List<string> filePaths = new List<string>();
         public string asmdefGuid;
         public bool autoReferencedDll;
+        public bool notAutoReferenced; // AsmDef with "autoReferenced": false: Assembly-CSharp(-Editor) does not see it
+        public bool editorOnly; // AsmDef compiled only for the Editor
         public bool serializableNonUnityObject;
     }
 

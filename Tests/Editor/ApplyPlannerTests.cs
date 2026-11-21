@@ -739,5 +739,36 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Add("Assets/Other/Extra.cs", "x", "Game.Alpha.Extra"); // the namespace also holds a type outside any module
             Assert.IsEmpty(Removed("t"));
         }
+
+        // A type from a DLL or another assembly that the scan only knows by reference.
+        TypeRecord Lib(string fullName, string assembly, AssemblyKind kind) =>
+            scan.types[fullName] = new TypeRecord { fullName = fullName, ns = Ns(fullName), assemblyName = assembly, kind = kind };
+
+        [Test]
+        public void NamespaceFromAnAutoReferencedDll_StillShadows()
+        {
+            // Game.Alpha.Tools exists only in Vendor.dll; inside Game.Alpha a plain `Tools` would bind to it (CS0118).
+            Lib("Vendor.Tools", "Vendor", AssemblyKind.Precompiled).autoReferencedDll = true;
+            Lib("Game.Alpha.Tools.Hammer", "Vendor", AssemblyKind.Precompiled).autoReferencedDll = true;
+            Add(S + "User.cs", "u", "User", "Vendor.Tools", "Game.Alpha.Tools.Hammer");
+            disk.sourceByGuid["u"] = "using Vendor;\n\nclass User\n{\n    Tools t;\n    Game.Alpha.Tools.Hammer h;\n}\n";
+            Assign("Alpha", "u");
+            CollectionAssert.AreEqual(new[] { ("Tools", "global::Vendor.Tools") }, Plan().edits.Single(x => x.guid == "u").aliases);
+        }
+
+        [Test]
+        public void UnassignedFile_DoesNotSeeANonAutoReferencedAsmdefNamespace()
+        {
+            // Game.Util.Tools lives only in Hidden.asmdef ("autoReferenced": false), which Assembly-CSharp does not see.
+            Lib("Vendor.Tools", "Vendor", AssemblyKind.Precompiled).autoReferencedDll = true;
+            var hidden = Lib("Game.Util.Tools.Secret", "Hidden", AssemblyKind.AsmDef);
+            hidden.asmdefGuid = new string('h', 32);
+            hidden.notAutoReferenced = true;
+            Add(S + "Util.cs", "u", "Game.Util.User", "Vendor.Tools");
+            disk.sourceByGuid["u"] = "using Vendor;\n\nnamespace Game.Util\n{\n    class User { Tools t; }\n}\n";
+            Assert.IsFalse(Plan().edits.Any(x => x.guid == "u"));
+            hidden.notAutoReferenced = false; // control: an auto-referenced one does shadow
+            CollectionAssert.AreEqual(new[] { ("Tools", "global::Vendor.Tools") }, Plan().edits.Single(x => x.guid == "u").aliases);
+        }
     }
 }
