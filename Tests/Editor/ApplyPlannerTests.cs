@@ -876,6 +876,10 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             var p = Plan();
             Assert.IsTrue(p.issues.Any(i => i.code == IssueCode.WriteBoundary && i.severity == Severity.Error && i.path == "Assets/Elsewhere/Combat/Weapon.cs"), Describe(p));
             Assert.IsTrue(p.issues.Any(i => i.code == IssueCode.WriteBoundary && i.path == "Assets/Elsewhere/Combat/Game.Combat.asmdef"), Describe(p));
+            var b = p.issues.First(i => i.code == IssueCode.WriteBoundary);
+            StringAssert.Contains("module Combat's folder Assets/Elsewhere/Combat is outside the scope folders and the modules root. " +
+                "Add Assets/Elsewhere/Combat to scope folders or move the module back.", b.message);
+            Assert.AreEqual("Assets/Elsewhere/Combat", b.scopeFix);
 
             m.folder = S + "../Elsewhere/Combat";
             Assert.IsTrue(Plan().issues.Any(i => i.code == IssueCode.WriteBoundary), "a .. segment is not inside the scope");

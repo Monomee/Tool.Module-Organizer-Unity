@@ -288,6 +288,12 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 EditorUtility.DisplayDialog("Module Organizer", "Scope folders must be inside Assets/.", "OK");
                 return;
             }
+            AddScopeFolder(rel);
+        }
+
+        void AddScopeFolder(string rel)
+        {
+            if (cfg == null) return;
             if (!cfg.scopeFolders.Contains(rel)) ModuleEdits.Change(cfg, "Add scope folder", () => cfg.scopeFolders.Add(rel));
             Validate();
         }
@@ -610,13 +616,22 @@ namespace Monome.UtilityPack.ModuleOrganizer
         {
             issuesView.Clear();
             var issues = report?.issues ?? new List<Issue>();
-            issuesTab.label = $"Issues ({issues.Count(i => i.severity == Severity.Error)} ✗, {issues.Count(i => i.severity == Severity.Warning)} ⚠)";
+            // A module outside the scope and modulesRoot blocks only the plan; shown here too, once per folder, with the fix.
+            var boundary = (plan?.issues ?? new List<Issue>()).Where(i => i.scopeFix != null).GroupBy(i => i.scopeFix).Select(g => g.First()).ToList();
+            issuesTab.label = $"Issues ({issues.Count(i => i.severity == Severity.Error) + boundary.Count} ✗, {issues.Count(i => i.severity == Severity.Warning)} ⚠)";
             if (report == null)
             {
                 issuesView.Add(Line("Not validated yet."));
                 return;
             }
-            if (issues.Count == 0) issuesView.Add(Line("No issues."));
+            if (issues.Count + boundary.Count == 0) issuesView.Add(Line("No issues."));
+            foreach (var i in boundary)
+            {
+                var row = new VisualElement().With("row");
+                row.Add(IssueLine(i));
+                row.Add(new Button(() => AddScopeFolder(i.scopeFix)) { name = "add-as-scope", text = "Add as scope", tooltip = "Add " + i.scopeFix + " to the scope folders." });
+                issuesView.Add(row);
+            }
             foreach (var i in issues.OrderByDescending(i => i.severity).ThenBy(i => i.path, StringComparer.Ordinal))
                 issuesView.Add(IssueLine(i));
         }

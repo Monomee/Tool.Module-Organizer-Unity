@@ -62,6 +62,39 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             }
         }
 
+        [Test]
+        public void ModuleOutsideScopeAndModulesRoot_IssuesTabNamesItAndAddsItsFolderAsScope()
+        {
+            const string path = "Assets/ModuleConfigWindowTest.asset";
+            var cfg = ScriptableObject.CreateInstance<ModuleConfig>();
+            cfg.scopeFolders.Add("Assets/_Fixtures/Scope");
+            AssetDatabase.CreateAsset(cfg, path);
+            var w = ScriptableObject.CreateInstance<ModuleOrganizerWindow>();
+            try
+            {
+                Call(w, "CreateGUI");
+                var scan = (ScanResult)typeof(ModuleOrganizerWindow).GetField("scan", Any).GetValue(w);
+                var alpha = ModuleEdits.AddModule(cfg);
+                ModuleEdits.RenameModule(cfg, alpha, "Alpha");
+                ModuleEdits.Assign(cfg, scan, new[] { Guid("Scope/FxA.cs") }, alpha, File.ReadAllText);
+                alpha.folder = "Assets/_Fixtures/Elsewhere/Alpha"; // e.g. the scope changed after Apply
+                Call(w, "Validate");
+                StringAssert.Contains("[WriteBoundary]", Issues(w));
+                StringAssert.Contains("module Alpha's folder Assets/_Fixtures/Elsewhere/Alpha is outside", Issues(w));
+                Assert.That(w.rootVisualElement.Q("issues").Query<Button>("add-as-scope").ToList().Count, Is.EqualTo(1), "once per folder");
+
+                typeof(ModuleOrganizerWindow).GetMethod("AddScopeFolder", Any).Invoke(w, new object[] { "Assets/_Fixtures/Elsewhere/Alpha" });
+                CollectionAssert.Contains(cfg.scopeFolders, "Assets/_Fixtures/Elsewhere/Alpha");
+                StringAssert.DoesNotContain("[WriteBoundary]", Issues(w));
+                Assert.That(w.rootVisualElement.Q("issues").Query<Button>("add-as-scope").ToList(), Is.Empty);
+            }
+            finally
+            {
+                Object.DestroyImmediate(w);
+                AssetDatabase.DeleteAsset(path);
+            }
+        }
+
         // Manual check Step 2 without the mouse: the drops call the same ModuleEdits the window's drop handlers call.
         [Test]
         public void Scenario_IssuesGateApply_UndoRevertsAssign()

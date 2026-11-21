@@ -77,6 +77,24 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void MoveAtoB_OfAnEntryAcceptedFromDisk_KeepsItsSubfolderInsideTheModule()
+        {
+            // Accepted from disk: originalPath is inside Alpha's folder; scope-relative it would be Alpha/Sub (doubled).
+            File("g1", "Assets/_Scripts/Alpha/Sub/Gun.cs");
+            alpha.scripts.Add(new ScriptEntry { guid = "g1", originalPath = "Assets/_Scripts/Alpha/Sub/Gun.cs", relativeDir = "Sub", applied = true });
+            Assign(beta, "g1");
+            Assert.That(beta.scripts.Single().relativeDir, Is.EqualTo("Sub"));
+            Assert.That(PathRules.TargetPath(beta, beta.scripts.Single(), "Assets/_Scripts/Alpha/Sub/Gun.cs", false, cfg.scopeFolders),
+                Is.EqualTo("Assets/_Scripts/Beta/Sub/Gun.cs"));
+
+            // Back to a module whose folder holds originalPath: relative to that folder, as for a new entry.
+            File("g2", "Assets/_Scripts/Beta/Gun2.cs");
+            alpha.scripts.Add(new ScriptEntry { guid = "g2", originalPath = "Assets/_Scripts/Beta/X/Gun2.cs", relativeDir = "Beta/X", applied = true });
+            Assign(beta, "g2");
+            Assert.That(beta.scripts.Single(x => x.guid == "g2").relativeDir, Is.EqualTo("X"));
+        }
+
+        [Test]
         public void Assign_ToSameModule_IsNoOp()
         {
             File("g1", "Assets/_Scripts/Gun.cs");

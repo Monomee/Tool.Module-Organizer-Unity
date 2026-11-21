@@ -18,6 +18,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public IssueCode code;
         public string path;
         public string message;
+        public string scopeFix; // WriteBoundary: the module folder that, added as a scope folder, lifts the block
 
         public override string ToString() => $"{severity} {code} {path}: {message}";
     }

@@ -9,7 +9,9 @@ namespace Monome.UtilityPack.ModuleOrganizer
     public static class ModuleEdits
     {
         // Assigns the assignable, in-scope files to m. A file taken from another module or from pendingRemovals keeps
-        // its history (where it was before the first Apply); its subfolder is recomputed for m as NewEntry would.
+        // its history (where it was before the first Apply). Its subfolder in m is the one it had in its old module (an
+        // entry accepted from disk has originalPath inside that module's folder: recomputing would repeat the folder),
+        // unless originalPath lies in m's folder (then relative to it, as NewEntry does).
         // Returns how many entries changed.
         public static int Assign(ModuleConfig cfg, ScanResult scan, IEnumerable<string> guids, Module m, Func<string, string> readSource)
         {
@@ -23,11 +25,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 var prev = from?.scripts.First(e => e.guid == g) ?? cfg.pendingRemovals.FirstOrDefault(e => e.guid == g);
                 from?.scripts.RemoveAll(e => e.guid == g);
                 cfg.pendingRemovals.RemoveAll(e => e.guid == g);
-                // ponytail: an entry accepted from disk has originalPath inside its old module folder, so its subfolder
-                // here is scope-relative (may repeat the old module's name); carry the old relativeDir if that bites.
-                m.scripts.Add(prev != null
+                var e = prev != null
                     ? PathRules.NewEntry(m, g, prev.originalPath, prev.originalNamespace, cfg.scopeFolders)
-                    : PathRules.NewEntry(m, g, f.path, Namespace(readSource(f.path)), cfg.scopeFolders));
+                    : PathRules.NewEntry(m, g, f.path, Namespace(readSource(f.path)), cfg.scopeFolders);
+                if (from != null && !PathRules.IsUnder(prev.originalPath, m.folder)) e.relativeDir = PathRules.EntryRelativeDir(from, prev, cfg.scopeFolders);
+                m.scripts.Add(e);
                 n++;
             }
             EditorUtility.SetDirty(cfg);

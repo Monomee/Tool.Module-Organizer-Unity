@@ -192,8 +192,19 @@ namespace Monome.UtilityPack.ModuleOrganizer
             void Boundary(string path, string what)
             {
                 var p = PathRules.Norm(path);
-                if (p.Split('/').All(x => x.Length > 0 && x != "." && x != "..") && roots.Any(r => PathRules.IsUnder(p, r))) return;
-                Error(IssueCode.WriteBoundary, path, $"Refusing to {what} {path}: it is not inside a scope folder or the modules root.");
+                var plain = p.Split('/').All(x => x.Length > 0 && x != "." && x != "..");
+                if (plain && roots.Any(r => PathRules.IsInside(p, r))) return;
+                // Usually a module whose folder the scope or modulesRoot no longer covers (changed after Apply).
+                var m = !plain ? null : cfg.modules.Where(x => PathRules.IsInside(p, x.folder)).OrderByDescending(x => PathRules.Norm(x.folder).Length).FirstOrDefault();
+                if (m == null)
+                {
+                    Error(IssueCode.WriteBoundary, path, $"Refusing to {what} {path}: it is not inside a scope folder or the modules root.");
+                    return;
+                }
+                var folder = PathRules.Norm(m.folder);
+                Error(IssueCode.WriteBoundary, path, $"Refusing to {what} {path}: module {m.name}'s folder {folder} is outside the scope " +
+                    $"folders and the modules root. Add {folder} to scope folders or move the module back.");
+                plan.issues[plan.issues.Count - 1].scopeFix = folder;
             }
 
             void Asmdef(Module m, bool editor, bool want)
