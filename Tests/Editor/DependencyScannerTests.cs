@@ -1,3 +1,4 @@
+using System.Linq;
 using NUnit.Framework;
 
 namespace Monome.UtilityPack.ModuleOrganizer.Tests
@@ -82,6 +83,23 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.IsTrue(S.types["FxData"].serializableNonUnityObject);
             Assert.IsFalse(S.types["FxA"].serializableNonUnityObject);
             Assert.IsFalse(S.types["FxB"].serializableNonUnityObject);
+        }
+
+        static string Meta(params (string first, int enabled)[] entries) =>
+            "PluginImporter:\n  isExplicitlyReferenced: 0\n  platformData:\n" + string.Concat(entries.Select(e =>
+                "  - first:\n      " + e.first + "\n    second:\n      enabled: " + e.enabled + "\n      settings:\n        CPU: AnyCPU\n"));
+
+        [Test]
+        public void IsEditorOnlyDll_FromPlatformDataOrEditorFolder()
+        {
+            var editorOnly = Meta((": Any", 0), ("Editor: Editor", 1), ("Standalone: Win64", 0));
+            var anyPlatform = Meta((": Any", 1), ("Editor: Editor", 0));
+            var standaloneAndEditor = Meta((": Any", 0), ("Editor: Editor", 1), ("Standalone: Win64", 1));
+            Assert.IsTrue(DependencyScanner.IsEditorOnlyDll("Assets/Plugins/Vendor.dll", editorOnly));
+            Assert.IsFalse(DependencyScanner.IsEditorOnlyDll("Assets/Plugins/Vendor.dll", anyPlatform));
+            Assert.IsFalse(DependencyScanner.IsEditorOnlyDll("Assets/Plugins/Vendor.dll", standaloneAndEditor));
+            Assert.IsTrue(DependencyScanner.IsEditorOnlyDll("Assets/Plugins/Editor/Vendor.dll", anyPlatform));
+            Assert.IsFalse(DependencyScanner.IsEditorOnlyDll("Assets/Plugins/EditorTools/Vendor.dll", ""));
         }
     }
 }

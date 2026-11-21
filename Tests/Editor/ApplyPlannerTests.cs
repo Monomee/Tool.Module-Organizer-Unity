@@ -770,5 +770,22 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             hidden.notAutoReferenced = false; // control: an auto-referenced one does shadow
             CollectionAssert.AreEqual(new[] { ("Tools", "global::Vendor.Tools") }, Plan().edits.Single(x => x.guid == "u").aliases);
         }
+
+        [Test]
+        public void RuntimeFile_UsingAnEditorOnlyDllUnderIf_GetsNoAlias()
+        {
+            // Vendor.dll is Editor-only: its Game.Alpha.Tools does not exist in the runtime asmdef, and an unconditional
+            // `using Tools = global::Vendor.Tools;` would break the player build.
+            foreach (var n in new[] { "Vendor.Tools", "Game.Alpha.Tools.Hammer" })
+            {
+                var t = Lib(n, "Vendor", AssemblyKind.Precompiled);
+                t.autoReferencedDll = true;
+                t.editorOnly = true;
+            }
+            Add(S + "User.cs", "u", "User", "Vendor.Tools", "Game.Alpha.Tools.Hammer");
+            disk.sourceByGuid["u"] = "#if UNITY_EDITOR\nusing Vendor;\n#endif\n\nclass User\n{\n#if UNITY_EDITOR\n    Tools t;\n    Game.Alpha.Tools.Hammer h;\n#endif\n}\n";
+            Assign("Alpha", "u");
+            Assert.IsEmpty(Plan().edits.Single(x => x.guid == "u").aliases);
+        }
     }
 }

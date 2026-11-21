@@ -19,7 +19,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             var asms = CompilationPipeline.GetAssemblies(AssembliesType.Editor);
             var kinds = asms.ToDictionary(a => a.name, a => KindOf(a.name));
             var precompiled = CompilationPipeline.GetPrecompiledAssemblyPaths(CompilationPipeline.PrecompiledAssemblySources.UserAssembly)
-                .GroupBy(p => Path.GetFileNameWithoutExtension(p)).ToDictionary(g => g.Key, g => AutoReferenced(g.First()));
+                .GroupBy(p => Path.GetFileNameWithoutExtension(p)).ToDictionary(g => g.Key, g => DllInfo(g.First()));
 
             var resolver = new DefaultAssemblyResolver();
             resolver.AddSearchDirectory(scriptAssembliesDir);
@@ -206,10 +206,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     };
                     if (asmName == null) return;
                     if (kinds.TryGetValue(asmName, out var k)) rec.kind = k;
-                    else if (precompiled.TryGetValue(asmName, out var auto))
+                    else if (precompiled.TryGetValue(asmName, out var dll))
                     {
                         rec.kind = AssemblyKind.Precompiled;
-                        rec.autoReferencedDll = auto;
+                        rec.autoReferencedDll = dll.auto;
+                        rec.editorOnly = dll.editorOnly;
                     }
                 }
             }
@@ -228,10 +229,46 @@ namespace Monome.UtilityPack.ModuleOrganizer
         }
 
         // PluginImporter.IsExplicitlyReferenced is internal in 6000.3, so read the importer's .meta instead.
-        static bool AutoReferenced(string dllPath)
+        static (bool auto, bool editorOnly) DllInfo(string dllPath)
         {
             var meta = dllPath + ".meta";
-            return !File.Exists(meta) || !File.ReadAllText(meta).Contains("isExplicitlyReferenced: 1");
+            var text = File.Exists(meta) ? File.ReadAllText(meta) : "";
+            return (!text.Contains("isExplicitlyReferenced: 1"), IsEditorOnlyDll(dllPath, text));
+        }
+
+        // A DLL only the Editor loads: under an `Editor` folder (Unity's special-folder rule), or a PluginImporter .meta whose
+        // platformData enables Editor and nothing else (Any off). Entries read line by line: `- first:`, then
+        // `<Group>: <Name>` (`: Any` for Any), then the entry's first `enabled: 0|1`.
+        public static bool IsEditorOnlyDll(string dllPath, string metaText)
+        {
+            var dirs = PathRules.Norm(dllPath).Split('/');
+            if (dirs.Take(dirs.Length - 1).Contains("Editor")) return true;
+            bool any = false, editor = false, other = false;
+            var lines = (metaText ?? "").Replace("\r", "").Split('\n');
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var head = lines[i].Trim();
+                if (!head.StartsWith("- first:", StringComparison.Ordinal)) continue;
+                var key = head.Substring("- first:".Length).Trim();
+                if (key.Length == 0 && i + 1 < lines.Length) key = lines[++i].Trim();
+                key = key.Trim('{', '}', ' ');
+                var cut = key.LastIndexOf(':');
+                var group = cut < 0 ? "" : key.Substring(0, cut).Trim();
+                var name = cut < 0 ? key : key.Substring(cut + 1).Trim();
+                var on = false;
+                for (var j = i + 1; j < lines.Length && !lines[j].Trim().StartsWith("- first:", StringComparison.Ordinal); j++)
+                {
+                    var l = lines[j].Trim();
+                    if (!l.StartsWith("enabled:", StringComparison.Ordinal)) continue;
+                    on = l.Substring("enabled:".Length).Trim() == "1";
+                    break;
+                }
+                if (!on) continue;
+                if (name == "Any") any = true;
+                else if (group == "Editor" && name == "Editor") editor = true;
+                else other = true;
+            }
+            return !any && editor && !other;
         }
 
         // Loads DLL and PDB into memory so no file handle stays open on files Unity rewrites.
