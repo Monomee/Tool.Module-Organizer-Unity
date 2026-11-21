@@ -66,6 +66,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
         // ("delegate (int x) { }", "delegate { }") and function pointers ("delegate*<...>").
         static string DelegateName(string s, int i)
         {
+            while (i < s.Length && char.IsWhiteSpace(s[i])) i++;
+            if (i < s.Length && s[i] == '*') return null; // function pointer; a later '*' is a pointer return type
             string last = null;
             int arity = 0, paren = 0, angle = 0;
             for (; i < s.Length; i++)
@@ -90,7 +92,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     paren++;
                 }
                 else if (c == ')') paren--;
-                else if (paren == 0 && angle == 0 && (c == '{' || c == '}' || c == ';' || c == '=' || c == '*')) return null;
+                else if (paren == 0 && angle == 0 && (c == '{' || c == '}' || c == ';' || c == '=')) return null;
             }
             return null;
         }

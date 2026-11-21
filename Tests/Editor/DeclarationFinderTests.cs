@@ -44,6 +44,15 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void Find_PointerReturnDelegates_ButNotFunctionPointers()
+        {
+            var src = "public unsafe delegate int* Handler();\n" +
+                      "unsafe delegate byte** Raw<T>(T x);\n" +
+                      "unsafe class F { delegate* unmanaged<int, void> fp; delegate *<int> fq; }";
+            CollectionAssert.AreEquivalent(new[] { "Handler", "Raw`1", "F" }, DeclarationFinder.Find(src).Keys);
+        }
+
+        [Test]
         public void Find_IfElifElse_FollowsDefines()
         {
             var src = "#if A && !B\nclass X { }\n#elif (C || D) == true\nclass Y { }\n#else\nclass Z { }\n#endif\n";
