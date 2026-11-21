@@ -20,7 +20,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
     {
         public Dictionary<string, string> scriptPathByGuid = new Dictionary<string, string>(); // config scripts + .cs under module folders
         public Dictionary<string, AsmdefSnapshot> asmdefsByGuid = new Dictionary<string, AsmdefSnapshot>(); // config asmdefs + asmdefs under module folders
-        public Dictionary<string, string> sourceByGuid = new Dictionary<string, string>(); // .cs text of unassigned scripts under module folders
+        public Dictionary<string, string> sourceByGuid = new Dictionary<string, string>(); // .cs text of every script under a module folder
 
         [Serializable]
         class AsmdefDto
@@ -34,22 +34,21 @@ namespace Monome.UtilityPack.ModuleOrganizer
         {
             var d = new DiskSnapshot();
             var folders = cfg.modules.Select(m => PathRules.Norm(m.folder)).Where(AssetDatabase.IsValidFolder).Distinct().ToArray();
-            var known = new HashSet<string>(cfg.modules.SelectMany(m => m.scripts).Concat(cfg.pendingRemovals).Select(e => e.guid));
-            foreach (var g in cfg.modules.SelectMany(m => m.scripts).Select(e => e.guid)) Script(g);
+            foreach (var g in cfg.modules.SelectMany(m => m.scripts).Select(e => e.guid)) Script(g, false);
             foreach (var g in cfg.modules.SelectMany(m => new[] { m.asmdefGuid, m.editorAsmdefGuid })) Asmdef(g);
             if (folders.Length > 0)
             {
-                foreach (var g in AssetDatabase.FindAssets("t:Script", folders)) Script(g);
+                foreach (var g in AssetDatabase.FindAssets("t:Script", folders)) Script(g, true);
                 foreach (var g in AssetDatabase.FindAssets("t:AssemblyDefinitionAsset", folders)) Asmdef(g);
             }
             return d;
 
-            void Script(string g)
+            void Script(string g, bool readSource)
             {
                 var p = Existing(g, ".cs");
                 if (p == null) return;
                 d.scriptPathByGuid[g] = p;
-                if (!known.Contains(g)) d.sourceByGuid[g] = File.ReadAllText(p);
+                if (readSource) d.sourceByGuid[g] = File.ReadAllText(p);
             }
 
             void Asmdef(string g)
@@ -143,6 +142,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             Undo.RecordObject(cfg, "Sync from disk");
             // Asmdef items first (they can move module.folder, which ScriptMovedOut re-checks), then removals, then
             // additions: a file moved from module A into B's folder must leave A before B can take it.
+            var released = new Dictionary<string, ScriptEntry>(); // moved out this pass: history for a module taking them in
             foreach (var it in items.OrderBy(Phase))
             {
                 var m = cfg.modules.FirstOrDefault(x => x.name == it.moduleName);
@@ -166,8 +166,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         // From the name, not rootNamespace: Diff compares the name to AsmdefName(module).
                         var ns = a.name ?? "";
                         if (editor && ns.EndsWith(".Editor", StringComparison.Ordinal)) ns = ns.Substring(0, ns.Length - ".Editor".Length);
-                        // Entries recorded at their spot in the old folder (accepted from disk) follow it, else the
-                        // planner would re-nest them under the scope-relative path.
+                        // Entries recorded inside the old folder (accepted from disk) follow it: their restore target
+                        // moved with the user's rename, and entries without relativeDir derive their subfolder from it.
                         var old = PathRules.Norm(m.folder);
                         foreach (var e in m.scripts.Where(e => PathRules.IsUnder(e.originalPath, old)))
                             e.originalPath = dir + PathRules.Norm(e.originalPath).Substring(old.Length);
@@ -179,15 +179,22 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         break;
                     case DriftKind.ScriptMovedOut:
                         // Just unassigned: the file stays where the user put it, so no pendingRemovals restore.
-                        if (disk.scriptPathByGuid.TryGetValue(it.guid, out var cur) && !InModule(m, disk, cur)) m.scripts.RemoveAll(e => e.guid == it.guid);
+                        if (!disk.scriptPathByGuid.TryGetValue(it.guid, out var cur) || InModule(m, disk, cur)) break;
+                        foreach (var e in m.scripts.Where(e => e.guid == it.guid)) released[it.guid] = e;
+                        m.scripts.RemoveAll(e => e.guid == it.guid);
                         break;
                     case DriftKind.ScriptAddedInModuleFolder:
                         if (!disk.scriptPathByGuid.TryGetValue(it.guid, out var path) || cfg.FindModuleOf(it.guid) != null) break;
-                        var src = disk.sourceByGuid.TryGetValue(it.guid, out var s) ? s : "";
-                        m.scripts.Add(new ScriptEntry
+                        var fileNs = disk.sourceByGuid.TryGetValue(it.guid, out var s) ? SourceRewriter.Parse(s).namespaces.FirstOrDefault() ?? "" : "";
+                        var entry = PathRules.NewEntry(m, it.guid, path, fileNs, cfg.scopeFolders);
+                        if (released.TryGetValue(it.guid, out var prev))
                         {
-                            guid = it.guid, originalPath = path, originalNamespace = SourceRewriter.Parse(src).namespaces.FirstOrDefault() ?? "", applied = true,
-                        });
+                            // Same file moving A -> B: keep where it came from (restore target), only its place in B is new.
+                            entry.originalPath = prev.originalPath;
+                            entry.originalNamespace = prev.originalNamespace;
+                        }
+                        entry.applied = true;
+                        m.scripts.Add(entry);
                         break;
                     case DriftKind.ReferencesDiffer:
                         // Hand-added references become (editor)ExtraReferences. References missing on disk stay in the

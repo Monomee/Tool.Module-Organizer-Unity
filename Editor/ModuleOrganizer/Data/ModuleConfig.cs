@@ -11,6 +11,9 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public string guid;
         public string originalPath;
         public string originalNamespace;
+        // Subfolder inside the module, fixed when the entry is created (PathRules.NewEntry) so later config folder
+        // renames keep it. Null on older entries: derived from originalPath instead.
+        public string relativeDir;
         public bool applied;
     }
 
@@ -89,6 +92,17 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return IsUnder(path, m.folder) ? DirUnder(path, Norm(m.folder)) : ScopeRelativeDir(path, scopeFolders);
         }
 
+        public static string EntryRelativeDir(Module m, ScriptEntry e, IReadOnlyList<string> scopeFolders) =>
+            e.relativeDir ?? RelativeDir(m, e.originalPath, scopeFolders);
+
+        // The one way to assign a file: records where it is now and its subfolder inside m.
+        public static ScriptEntry NewEntry(Module m, string guid, string currentPath, string currentNamespace, IReadOnlyList<string> scopeFolders) =>
+            new ScriptEntry
+            {
+                guid = guid, originalPath = Norm(currentPath), originalNamespace = currentNamespace,
+                relativeDir = RelativeDir(m, currentPath, scopeFolders),
+            };
+
         static string DirUnder(string path, string root)
         {
             var dir = path.Substring(0, Math.Max(path.LastIndexOf('/'), 0));
@@ -100,7 +114,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         {
             var parts = new List<string> { Norm(m.folder) };
             if (isEditor) parts.Add("Editor");
-            parts.Add(RelativeDir(m, e.originalPath, scopeFolders));
+            parts.Add(EntryRelativeDir(m, e, scopeFolders));
             parts.Add(Norm(e.originalPath).Split('/').Last());
             return string.Join("/", parts.Where(s => s.Length > 0));
         }

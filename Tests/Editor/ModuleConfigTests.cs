@@ -62,5 +62,20 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.AreEqual("Assets/_Scripts/Combat/Editor/Sub/DamageEditor.cs", PathRules.TargetPath(m, ed, true, scope));
             Assert.AreEqual("Weapons", PathRules.RelativeDir(m, "Assets/_Scripts/Weapons/Gun.cs", scope), "outside the module: scope-relative");
         }
+
+        [Test]
+        public void NewEntry_FixesRelativeDir_SoConfigFolderRenameKeepsIt()
+        {
+            var m = new Module { name = "Combat", namespaceName = "Game.Combat", folder = "Assets/_Scripts/Combat" };
+            var scope = new[] { "Assets/_Scripts" };
+            var e = PathRules.NewEntry(m, "g", "Assets/_Scripts/Combat/Sub/X.cs", "Old", scope);
+            Assert.AreEqual(("g", "Assets/_Scripts/Combat/Sub/X.cs", "Old", "Sub"), (e.guid, e.originalPath, e.originalNamespace, e.relativeDir));
+            Assert.AreEqual("Weapons", PathRules.NewEntry(m, "h", "Assets/_Scripts/Weapons/Gun.cs", "", scope).relativeDir);
+
+            m.folder = "Assets/_Scripts/Fight";
+            m.namespaceName = "Game.Fight";
+            Assert.AreEqual("Assets/_Scripts/Fight/Sub/X.cs", PathRules.TargetPath(m, e, false, scope));
+            Assert.AreEqual("Game.Fight.Sub", PathRules.TargetNamespace(m, PathRules.EntryRelativeDir(m, e, scope), false));
+        }
     }
 }

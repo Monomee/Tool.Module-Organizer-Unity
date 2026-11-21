@@ -9,6 +9,8 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
     {
         const string F = "Assets/_Scripts/Combat";
         const string Ext = "0123456789abcdef0123456789abcdef";
+        const string WeaponSrc = "namespace Game.Combat\n{\n    class Weapon {}\n}\n";
+        const string DamageSrc = "namespace Game.Combat.Sub\n{\n    class Damage {}\n}\n";
         ModuleConfig cfg;
         DiskSnapshot disk;
         ValidationReport report;
@@ -23,10 +25,11 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             cfg.scopeFolders = new List<string> { "Assets/_Scripts" };
             combat = cfg.AddModule("Combat");
             combat.asmdefGuid = "a1";
-            combat.scripts.Add(new ScriptEntry { guid = "s1", originalPath = "Assets/_Scripts/Weapon.cs", originalNamespace = "", applied = true });
+            combat.scripts.Add(new ScriptEntry { guid = "s1", originalPath = "Assets/_Scripts/Weapon.cs", originalNamespace = "Legacy", applied = true });
             disk = new DiskSnapshot();
             Asmdef("a1", F + "/Game.Combat.asmdef", "Game.Combat");
             disk.scriptPathByGuid["s1"] = F + "/Weapon.cs";
+            disk.sourceByGuid["s1"] = WeaponSrc; // Capture reads every module-folder script, assigned or not
             report = new ValidationReport();
         }
 
@@ -58,7 +61,7 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
 
             ModuleSync.AcceptDisk(cfg, disk, d);
             var e = combat.scripts.Single(x => x.guid == "s2");
-            Assert.That((e.originalPath, e.originalNamespace, e.applied), Is.EqualTo((F + "/Sub/Damage.cs", "Old.Stuff", true)));
+            Assert.That((e.originalPath, e.originalNamespace, e.relativeDir, e.applied), Is.EqualTo((F + "/Sub/Damage.cs", "Old.Stuff", "Sub", true)));
             Assert.That(Diff(), Is.Empty);
         }
 
@@ -149,42 +152,63 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             cfg.modules.Insert(0, bravo);
             bravo.asmdefGuid = "b1";
             Asmdef("b1", bravo.folder + "/Game.Bravo.asmdef", "Game.Bravo");
-            disk.scriptPathByGuid["s1"] = bravo.folder + "/Weapon.cs";
-            disk.sourceByGuid["s1"] = "class Weapon {}\n";
+            disk.scriptPathByGuid["s1"] = bravo.folder + "/Sub/Weapon.cs";
             Assert.That(Diff().Select(i => (i.kind, i.moduleName)),
                 Is.EqualTo(new[] { (DriftKind.ScriptAddedInModuleFolder, "Bravo"), (DriftKind.ScriptMovedOut, "Combat") }));
 
             AcceptAll();
             Assert.That(combat.scripts, Is.Empty);
-            Assert.That(bravo.scripts.Select(e => e.guid), Is.EqualTo(new[] { "s1" }));
+            var e = bravo.scripts.Single();
+            Assert.That((e.guid, e.originalPath, e.originalNamespace, e.relativeDir, e.applied),
+                Is.EqualTo(("s1", "Assets/_Scripts/Weapon.cs", "Legacy", "Sub", true)), "same file: history kept, only its place in Bravo is new");
             Assert.That(Diff(), Is.Empty);
         }
 
         [Test]
         public void AcceptedFileInModuleSubfolder_NextApplyLeavesItAlone()
         {
-            const string src = "namespace Game.Combat.Sub\n{\n    class Damage {}\n}\n";
-            disk.scriptPathByGuid["s2"] = F + "/Sub/Damage.cs";
-            disk.sourceByGuid["s2"] = src;
-            ModuleSync.AcceptDisk(cfg, disk, Diff());
+            AcceptNewDamage();
+            var plan = PlanFromDisk();
+            Assert.That(plan.moves.Where(mv => mv.guid == "s2"), Is.Empty);
+            Assert.That(plan.edits.Where(e => e.guid == "s2" && e.setNamespace != null), Is.Empty);
+        }
 
+        [Test]
+        public void ModuleFolderRenamedInConfig_AcceptedFileKeepsItsSubfolder()
+        {
+            AcceptNewDamage();
+            combat.folder = "Assets/_Scripts/Fight";
+            combat.namespaceName = "Game.Fight";
+            var plan = PlanFromDisk();
+            Assert.That(plan.moves.Single(mv => mv.guid == "s2").to, Is.EqualTo("Assets/_Scripts/Fight/Sub/Damage.cs"));
+            Assert.That(plan.edits.Single(e => e.guid == "s2").setNamespace, Is.EqualTo("Game.Fight.Sub"));
+        }
+
+        void AcceptNewDamage()
+        {
+            disk.scriptPathByGuid["s2"] = F + "/Sub/Damage.cs";
+            disk.sourceByGuid["s2"] = DamageSrc;
+            ModuleSync.AcceptDisk(cfg, disk, Diff());
+        }
+
+        // Plan for Weapon.cs (s1) and Damage.cs (s2), both compiled in Combat's asmdef at their snapshot paths.
+        ApplyPlan PlanFromDisk()
+        {
             var scan = new ScanResult();
             var state = new DiskState();
-            void File(string guid, string path, string type, string text)
+            void File(string guid, string type)
             {
+                var path = disk.scriptPathByGuid[guid];
                 scan.files[guid] = new ScriptFile { guid = guid, path = path, kind = AssemblyKind.AsmDef, asmdefGuid = "a1", declaredTypes = { type } };
                 scan.types[type] = new TypeRecord { fullName = type, ns = type.Substring(0, type.LastIndexOf('.')), kind = AssemblyKind.AsmDef, assemblyName = "Game.Combat", asmdefGuid = "a1", filePaths = { path } };
                 state.pathByGuid[guid] = path;
-                state.sourceByGuid[guid] = text;
+                state.sourceByGuid[guid] = disk.sourceByGuid[guid];
             }
-            File("s1", F + "/Weapon.cs", "Game.Combat.Weapon", "namespace Game.Combat\n{\n    class Weapon {}\n}\n");
-            File("s2", F + "/Sub/Damage.cs", "Game.Combat.Sub.Damage", src);
+            File("s1", "Game.Combat.Weapon");
+            File("s2", "Game.Combat.Sub.Damage");
             state.pathByGuid["a1"] = F + "/Game.Combat.asmdef";
             var validation = ModuleValidator.Validate(cfg, scan, p => state.sourceByGuid[scan.FileByPath(p).guid]);
-            var plan = ApplyPlanner.Build(cfg, scan, validation, state);
-
-            Assert.That(plan.moves.Where(mv => mv.guid == "s2"), Is.Empty);
-            Assert.That(plan.edits.Where(e => e.guid == "s2" && e.setNamespace != null), Is.Empty);
+            return ApplyPlanner.Build(cfg, scan, validation, state);
         }
 
         [Test]

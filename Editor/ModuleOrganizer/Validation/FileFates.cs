@@ -65,7 +65,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         {
             if (!ModuleValidator.IsAssignable(f, cfg)) return null;
             if (assigned.TryGetValue(f.guid, out var a))
-                return PathRules.TargetPath(a.module, new ScriptEntry { originalPath = Original(f, a.entry) }, f.IsEditor, cfg.scopeFolders);
+                return PathRules.TargetPath(a.module, new ScriptEntry { originalPath = Original(f, a.entry), relativeDir = a.entry.relativeDir }, f.IsEditor, cfg.scopeFolders);
             return pending.TryGetValue(f.guid, out var p) && !string.IsNullOrEmpty(p.originalPath) ? PathRules.Norm(p.originalPath) : null;
         }
 
@@ -87,7 +87,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             if (assigned.TryGetValue(f.guid, out var a))
             {
                 if (!a.module.rewriteNamespace) return false;
-                target = PathRules.TargetNamespace(a.module, PathRules.RelativeDir(a.module, Original(f, a.entry), cfg.scopeFolders), f.IsEditor);
+                target = PathRules.TargetNamespace(a.module, a.entry.relativeDir ?? PathRules.RelativeDir(a.module, Original(f, a.entry), cfg.scopeFolders), f.IsEditor);
             }
             else if (pending.TryGetValue(f.guid, out var p) && p.originalNamespace != null) target = p.originalNamespace;
             else return false;
