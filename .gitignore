@@ -1,0 +1,11 @@
+.superpowers/
+TestHost~/Library/
+TestHost~/Temp/
+TestHost~/Logs/
+TestHost~/UserSettings/
+TestHost~/obj/
+TestHost~/results.xml
+TestHost~/test.log
+*.csproj
+*.sln
+.vs/
