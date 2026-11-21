@@ -35,6 +35,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 {
                     var dll = Path.Combine(scriptAssembliesDir, a.name + ".dll");
                     if (File.Exists(dll)) loaded.Add((a, Read(dll, resolver)));
+                    else UnityEngine.Debug.LogWarning($"[ModuleOrganizer] Scan skipped {a.name}: {dll} not found.");
                 }
 
                 // Pass 1: every type declared by a script assembly.
@@ -60,12 +61,14 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 {
                     if (!a.sourceFiles.Any(p => p.StartsWith("Assets/", StringComparison.Ordinal))) continue;
                     var files = new Dictionary<string, ScriptFile>();
+                    var declared = new List<(TypeRecord rec, string src)>();
                     foreach (var src in a.sourceFiles.Select(PathRules.Norm))
                     {
+                        if (!File.Exists(src)) continue; // deleted since the last compile
                         var f = files[src] = new ScriptFile { guid = AssetDatabase.AssetPathToGUID(src), path = src, kind = kinds[a.name] };
                         result.files[f.guid] = f;
                         foreach (var name in DeclarationFinder.Find(File.ReadAllText(src)).Keys)
-                            if (Own(name, out var rec)) AddPath(rec, src);
+                            if (Own(name, out var rec)) declared.Add((rec, src));
                     }
 
                     var types = def.MainModule.GetTypes().ToList();
@@ -79,6 +82,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         if (Own(Outermost(t).FullName, out var outer)) AddPath(outer, path);
                         if (Own(t.FullName, out var rec)) AddPath(rec, path);
                     }
+
+                    // The PDB is the authority. Source declarations only place types without sequence points
+                    // (enums, interfaces, delegates, field-only types), so a copy inside an inactive #if adds no file.
+                    // ponytail: a field-only part of a partial type whose other part has methods is not mapped; evaluate #if if that matters.
+                    foreach (var (rec, src) in declared.Where(d => d.rec.filePaths.Count == 0).ToList()) AddPath(rec, src);
 
                     foreach (var rec in result.types.Values.Where(r => r.assemblyName == a.name))
                     foreach (var p in rec.filePaths)
@@ -228,6 +236,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         {
             var bytes = File.ReadAllBytes(dll);
             var pdb = Path.ChangeExtension(dll, ".pdb");
+            var why = "no .pdb";
             if (File.Exists(pdb))
             {
                 try
@@ -237,8 +246,12 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         AssemblyResolver = resolver, ReadSymbols = true, SymbolStream = new MemoryStream(File.ReadAllBytes(pdb)),
                     });
                 }
-                catch (Exception e) when (e is Mono.Cecil.Cil.SymbolsNotMatchingException || e is Mono.Cecil.Cil.SymbolsNotFoundException) { }
+                catch (Exception e) when (e is Mono.Cecil.Cil.SymbolsNotMatchingException || e is Mono.Cecil.Cil.SymbolsNotFoundException)
+                {
+                    why = e.Message;
+                }
             }
+            UnityEngine.Debug.LogWarning($"[ModuleOrganizer] No symbols for {Path.GetFileName(dll)} ({why}); file mapping falls back to source declarations.");
             return AssemblyDefinition.ReadAssembly(new MemoryStream(bytes), new ReaderParameters { AssemblyResolver = resolver });
         }
 

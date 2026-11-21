@@ -23,5 +23,22 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.AreEqual("delegate", r["N.Make"]);
             Assert.AreEqual("interface", r["N.IFoo"]);
         }
+
+        [Test]
+        public void Find_EscapedIdentifiersAndTupleDelegates()
+        {
+            var src = "namespace @event . @in { enum Color { Red } class @class { @class other; }\n" +
+                      " public delegate (int a, int b) Handler();\n" +
+                      " class Q { void M() { Run(delegate (int x) { }); } } }";
+            var r = DeclarationFinder.Find(src);
+            CollectionAssert.AreEquivalent(new[] { "event.in.Color", "event.in.class", "event.in.Handler", "event.in.Q" }, r.Keys);
+        }
+
+        [Test]
+        public void Find_SourceEndingInStringPrefix_DoesNotThrow()
+        {
+            CollectionAssert.AreEquivalent(new[] { "A" }, DeclarationFinder.Find("class A { } @$").Keys);
+            CollectionAssert.AreEquivalent(new[] { "A" }, DeclarationFinder.Find("class A { } $$").Keys);
+        }
     }
 }

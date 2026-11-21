@@ -8,9 +8,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
     public static class DeclarationFinder
     {
         static readonly Regex Token = new Regex(
-            @"\bnamespace\s+(?<ns>[\w.]+)" +
-            @"|\b(?<tk>class|struct|interface|enum)\s+@?(?<tn>\w+)\s*(?<ta><[^>]*>)?" +
-            @"|\bdelegate\s+[^;{}()=]*?(?<dn>\w+)\s*(?<da><[^>]*>)?\s*\(" +
+            // (?<![@\w]) instead of \b so "@class" used as an identifier is not read as a keyword.
+            @"(?<![@\w])namespace\s+(?<ns>@?\w+(?:\s*\.\s*@?\w+)*)" +
+            @"|(?<![@\w])(?<tk>class|struct|interface|enum)\s+@?(?<tn>\w+)\s*(?<ta><[^>]*>)?" +
+            // The return type may be a tuple: "delegate (int a, int b) Handler();"
+            @"|(?<![@\w])delegate\s+(?:[^;{}()=]|\([^;{}()=]*\))*?(?<dn>\w+)\s*(?<da><[^>]*>)?\s*\(" +
             @"|(?<open>\{)|(?<close>\})",
             RegexOptions.Compiled);
 
@@ -22,7 +24,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             (char kind, string name)? pending = null;
             foreach (Match m in Token.Matches(Strip(source)))
             {
-                if (m.Groups["ns"].Success) pending = ('n', m.Groups["ns"].Value);
+                if (m.Groups["ns"].Success) pending = ('n', Regex.Replace(m.Groups["ns"].Value, @"[@\s]", ""));
                 else if (m.Groups["tn"].Success)
                 {
                     if (m.Groups["tn"].Value == "where") continue; // "where T : class where U ..."
@@ -68,7 +70,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (c == '"' || c == '\'' || ((c == '@' || c == '$') && (next == '"' || next == '@' || next == '$')))
                 {
                     var verbatim = false;
-                    while (s[i] != '"' && s[i] != '\'') { verbatim |= s[i] == '@'; i++; }
+                    while (i < s.Length && s[i] != '"' && s[i] != '\'') { verbatim |= s[i] == '@'; i++; }
+                    if (i >= s.Length) break;
                     var q = s[i];
                     for (i++; i < s.Length; i++)
                     {

@@ -46,6 +46,19 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void InactiveDeclaration_DoesNotAddFile()
+        {
+            CollectionAssert.AreEqual(new[] { "Assets/_Fixtures/Scope/FxShared.cs" }, S.types["FxShared"].filePaths);
+            CollectionAssert.DoesNotContain(F("Scope/FxShadow.cs").declaredTypes, "FxShared");
+        }
+
+        [Test]
+        public void LambdaReference_FoldsIntoOuterTypeFile()
+        {
+            CollectionAssert.Contains(F("Scope/FxA.cs").referencedTypes, "FxLambdaOnly");
+        }
+
+        [Test]
         public void SerializableNonUnityObject_Flag()
         {
             Assert.IsTrue(S.types["FxData"].serializableNonUnityObject);
