@@ -107,3 +107,77 @@ gate, Ctrl+Z of an assign re-validates, Apply arms then disarms on re-validate).
     anything else is listed, stop and sort it out by hand). Then, only for the test project:
     `git checkout -- "TestHost~"` and `git clean -fd -- "TestHost~/Assets"`. Reopen `TestHost~` and let it reimport.
     `git status --porcelain` prints nothing.
+
+## Task 13 — End-to-end in the Editor and Visual Studio 2026
+
+Fixture: `TestHost~/Assets/_E2E/` (đã commit). Scope là `Assets/_E2E/Scripts`: `E2EShooter` (dùng trong
+`Content/E2EShooter.prefab`, `power = 42`), `E2EPayload` (`[SerializeReference]` trong `Content/E2EStore.asset`,
+`value = 7`), `E2EStore`, `E2EEmitter` + `E2ETarget` (UnityEvent `onFire → Target.Ping` trong `Content/E2EScene.unity`),
+`Editor/E2EShooterEditor.cs`, `Misc/E2ELoose.cs` (namespace `E2E.Legacy`). Driver headless nằm ở `Assets/_E2E/Editor/`,
+ngoài scope nên tool không bao giờ chuyển nó.
+
+### Chạy E2E headless (không cần giao diện)
+
+Đóng mọi Unity đang mở `TestHost~`, `git status --porcelain` phải trống, rồi trong Git Bash ở thư mục gốc repo:
+
+```bash
+UNITY="/c/Program Files/Unity/Hub/Editor/6000.3.18f1/Editor/Unity.exe"
+"$UNITY" -batchmode -nographics -projectPath "$PWD/TestHost~" -executeMethod E2EDriver.Run -logFile "$PWD/TestHost~/e2e-run.log"
+echo exit=$?   # 0 = mọi phase PASS
+grep "^E2E " "TestHost~/e2e-run.log"
+# Dọn: trả TestHost~ về đúng trạng thái đã commit (chỉ trong TestHost~)
+git checkout -- "TestHost~" && git clean -fd -- "TestHost~/Assets"
+```
+
+Không dùng `-quit`: các phase chạy nối nhau trong cùng một tiến trình qua các lần domain reload (kết quả Apply nằm trong
+`SessionState`), driver tự `Exit`. Kết quả mong đợi, năm dòng `E2E A PASS`, `E2E B PASS`, `E2E C PASS`, `E2E D PASS`,
+`E2E E PASS`:
+A = gán 2 module + 1 file Editor và Apply; B = compile Editor/player OK, prefab không mất script, `[SerializeReference]`
+còn dữ liệu và YAML được serialize lại, UnityEvent còn listener và gọi được; C = đổi tên module, chuyển file, bỏ gán,
+Apply lại; D = file bỏ gán về đúng chỗ + namespace gốc; E = file thêm bằng tay được Sync phát hiện và "Take from disk".
+Muốn tạo lại asset fixture: `-executeMethod E2EDriver.Setup -quit`.
+
+### Kiểm tra tay trong Editor và Visual Studio 2026
+
+> Các bước này chỉ đụng tới `TestHost~`; không chạy lệnh git phá hủy nào trên toàn repo.
+
+0. Ở thư mục gốc repo chạy `git status --porcelain`. Nếu có dòng nào, **dừng lại**: commit hoặc stash trước (bước 12
+   sẽ xóa mọi thay đổi trong `TestHost~`).
+1. Mở `TestHost~` bằng Unity 6000.3, đợi import xong, Console không có lỗi. **Tools > Monome > Module Organizer** >
+   **Create ModuleConfig**. Thêm scope `Assets/_E2E/Scripts`.
+   Mong đợi: cây hiện `E2EEmitter.cs`, `E2EPayload.cs`, `E2EShooter.cs`, `E2EStore.cs`, `E2ETarget.cs`, `Editor/`
+   (có `E2EShooterEditor.cs` gắn nhãn `ed`) và `Misc/E2ELoose.cs`.
+2. Tạo module `Alpha` (namespace `Game.Alpha`) và `Beta` (namespace `Game.Beta`). **Kéo thả** `E2EShooter.cs`,
+   `E2EPayload.cs`, `E2EStore.cs` và `Editor/E2EShooterEditor.cs` vào thẻ Alpha; kéo `E2EEmitter.cs`, `E2ETarget.cs`,
+   `Misc/E2ELoose.cs` vào thẻ Beta.
+   Mong đợi: tab Issues không có lỗi ✗; tab Plan có 7 lượt chuyển file, 3 asmdef (`Game.Alpha`, `Game.Alpha.Editor`,
+   `Game.Beta`) và dòng `+using Editor = global::UnityEditor.Editor` cho `E2EShooterEditor.cs`.
+3. **Apply** > **Confirm Apply** (hộp thoại cảnh báo git hiện vì `ModuleConfig.asset` chưa commit: chọn **Apply**).
+   Mong đợi: sau khi compile và reload, tab Result báo `Editor compile: OK` và `Player compile (<target>): OK`, có dòng
+   `Re-serialized Assets/_E2E/Content/E2EStore.asset`. Console không có lỗi.
+4. Mở `Content/E2EShooter.prefab`: component `E2EShooter` không bị "Missing script", `Power = 42`. Chọn
+   `Content/E2EStore.asset`: trường `Payload` vẫn có `Value = 7`. Mở `Content/E2EScene.unity`, chọn `Emitter`: danh sách
+   `On Fire ()` vẫn có một listener trỏ tới `Target` > `E2ETarget.Ping`.
+5. Unity: **Edit > Preferences > External Tools**, chọn Visual Studio 2026, bấm **Regenerate project files**, rồi
+   **Assets > Open C# Project** (hoặc mở `TestHost~/TestHost~.sln` trong Visual Studio 2026).
+   Mong đợi: Solution Explorer có các project `Game.Alpha`, `Game.Alpha.Editor`, `Game.Beta` (cạnh `Assembly-CSharp`,
+   `Assembly-CSharp-Editor`, `E2E.Driver`...). Trong `Game.Alpha`, `E2EShooter.cs` có `namespace Game.Alpha`; trong
+   `Game.Alpha.Editor`, `E2EShooterEditor.cs` có `namespace Game.Alpha.Editor`; trong `Game.Beta`, `Misc/E2ELoose.cs` có
+   `namespace Game.Beta.Misc`. Build Solution trong Visual Studio không có lỗi; không có gạch đỏ ở `: Editor`.
+6. Trở lại Module Organizer: đổi tên module `Beta` thành `Gamma` và namespace thành `Game.Gamma`; kéo
+   `E2EPayload.cs` từ thẻ Alpha sang thẻ Gamma; kéo `E2ELoose.cs` từ thẻ Gamma về cây bên trái (nó hiện chữ nghiêng).
+   Mong đợi: không có lỗi ✗; Plan có chuyển thư mục `Beta` → `Gamma`, `E2ELoose.cs` về `Assets/_E2E/Scripts/Misc/`.
+7. **Apply** > **Confirm Apply**. Mong đợi: Result báo compile Editor và player OK. `Misc/E2ELoose.cs` nằm lại đúng
+   `Assets/_E2E/Scripts/Misc/` với `namespace E2E.Legacy` (namespace gốc) và có thêm `using Game.Gamma;`. Thư mục
+   `Beta` không còn; có `Gamma/Game.Gamma.asmdef`. Prefab, asset và scene ở bước 4 vẫn đúng như cũ.
+8. Visual Studio 2026 (sau khi Unity regenerate, hoặc bấm **Regenerate project files** lần nữa): project `Game.Beta`
+   biến mất, có `Game.Gamma`; `E2ELoose.cs` trở lại `Assembly-CSharp`.
+9. Trong cửa sổ Project, tạo script mới `E2EAdded.cs` trong `Assets/_E2E/Scripts/Gamma/` (chuột phải > Create > Scripting
+   > Empty C# Script, hoặc tạo file bằng Visual Studio), nội dung `namespace Game.Gamma { public class E2EAdded { } }`.
+   Mong đợi: sau compile, toolbar của Module Organizer hiện `⚠ 1 drift → Sync`; tab Sync liệt kê
+   `ScriptAddedInModuleFolder · Gamma: Assets/_E2E/Scripts/Gamma/E2EAdded.cs is in ... but not in the module.`
+10. Bấm **Take from disk** trên dòng đó. Mong đợi: dòng biến mất, `E2EAdded.cs` xuất hiện trong thẻ Gamma, tab Plan
+    báo "Nothing to apply".
+11. Thử hoàn tác bằng git: đóng Unity, chạy `git status` (chỉ có thay đổi trong `TestHost~/`).
+12. Dọn dẹp, chỉ cho project test: `git checkout -- "TestHost~"` và `git clean -fd -- "TestHost~/Assets"`. Mở lại
+    `TestHost~` để import lại. Mong đợi: các file quay về chỗ cũ, không lỗi compile; `git status --porcelain` trống.
