@@ -15,6 +15,30 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void IsUnder_IgnoresCaseAndBackslashes_IsInsideAcceptsTheFolderItself()
+        {
+            Assert.IsTrue(PathRules.IsUnder(@"Assets\_Scripts\Sub\A.cs", "Assets/_Scripts"));
+            Assert.IsTrue(PathRules.IsUnder("assets/_scripts/A.cs", @"Assets\_Scripts\"));
+            Assert.IsFalse(PathRules.IsUnder("Assets/_Scripts", "Assets/_Scripts"));
+            Assert.IsTrue(PathRules.IsInside("Assets/_scripts/", "Assets/_Scripts"));
+            Assert.IsTrue(PathRules.IsInside("Assets/_Scripts/A.cs", "Assets/_Scripts"));
+            Assert.IsFalse(PathRules.IsInside("Assets/_Scripts2", "Assets/_Scripts"));
+        }
+
+        [Test]
+        public void NestedScopes_InnermostWins_EvenWithOtherCase()
+        {
+            var scopes = new List<string> { "Assets/_Scripts", "Assets/_Scripts/Game" };
+            Assert.AreEqual("Sub", PathRules.ScopeRelativeDir("Assets/_Scripts/game/Sub/A.cs", scopes));
+            Assert.AreEqual("Other/Sub", PathRules.ScopeRelativeDir("Assets/_Scripts/Other/Sub/A.cs", scopes));
+            Assert.AreEqual("", PathRules.ScopeRelativeDir("Assets/Elsewhere/A.cs", scopes));
+            var c = ScriptableObject.CreateInstance<ModuleConfig>();
+            c.scopeFolders = scopes;
+            Assert.IsTrue(c.IsInScope("ASSETS/_SCRIPTS/GAME/A.cs"));
+            Object.DestroyImmediate(c);
+        }
+
+        [Test]
         public void AddModule_FillsDefaults()
         {
             var c = ScriptableObject.CreateInstance<ModuleConfig>();

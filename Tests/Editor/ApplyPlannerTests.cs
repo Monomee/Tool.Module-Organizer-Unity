@@ -817,6 +817,19 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void ModuleFolderCaseRename_MovesFilesAndAsmdef_WithoutConflictOrNewFolder()
+        {
+            Add(S + "Weapon.cs", "w", "Weapon");
+            var m = Assign("Combat", "w");
+            Execute(Plan());
+            m.folder = S + "combat";
+            var p = Plan();
+            Assert.IsEmpty(p.issues, Describe(p));
+            Assert.IsEmpty(p.createFolders);
+            CollectionAssert.AreEquivalent(new[] { S + "combat/Weapon.cs", S + "combat/Game.Combat.asmdef" }, p.moves.Select(x => x.to));
+        }
+
+        [Test]
         public void PathsOutsideScopeAndModulesRoot_AreWriteBoundaryErrors()
         {
             Add(S + "Weapon.cs", "w", "Weapon");

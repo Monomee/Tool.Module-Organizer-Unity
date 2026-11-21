@@ -56,6 +56,29 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void CaseOnlyRenames_OfAFolderAndAFile_GoThroughATemporaryName()
+        {
+            AssetDatabase.CreateFolder(T, "combat");
+            var inFolder = Add(T + "/combat/a.txt");
+            var file = Add(T + "/b.txt");
+            var errors = ModuleApplier.Execute(new ApplyPlan
+            {
+                moves =
+                {
+                    new MoveOp { guid = inFolder, from = T + "/combat/a.txt", to = T + "/Combat/a.txt" },
+                    new MoveOp { guid = file, from = T + "/b.txt", to = T + "/B.txt" },
+                },
+            }, cfg, out var touched, refresh: false);
+            CollectionAssert.IsEmpty(errors);
+            Assert.IsTrue(touched);
+            CollectionAssert.AreEquivalent(new[] { "Combat" }, Directory.GetDirectories(T).Select(Path.GetFileName));
+            CollectionAssert.Contains(Directory.GetFiles(T).Select(Path.GetFileName), "B.txt");
+            Assert.AreEqual(T + "/Combat/a.txt", AssetDatabase.GUIDToAssetPath(inFolder));
+            Assert.AreEqual(T + "/B.txt", AssetDatabase.GUIDToAssetPath(file));
+            Assert.IsFalse(Directory.GetFileSystemEntries(T, "*__monome_tmp*", SearchOption.AllDirectories).Any());
+        }
+
+        [Test]
         public void ReserializeKeys_AreOwedOnceDiskIsTouched_UntilCleared()
         {
             var guid = Add(T + "/a.txt");

@@ -30,6 +30,33 @@ namespace Monome.UtilityPack.ModuleOrganizer
             var texts = Preflight(plan, errors);
             if (errors.Count > 0) return errors;
 
+            // Case-only renames first, outside asset editing (the temporary name must be in the database): folders on the
+            // way to each target that exist under another case (combat -> Combat), outermost first, then files. A file that
+            // only moved with its folder is done; the other moves start inside the renamed folders.
+            var moves = plan.moves.Select(m => new MoveOp { guid = m.guid, from = m.from, to = m.to }).ToList();
+            foreach (var (from, to) in FolderCaseRenames(moves.Select(m => m.to)))
+            {
+                var err = CaseRename(from, to);
+                if (err != null)
+                {
+                    errors.Add($"Could not rename folder {from} to {to}: {err}");
+                    return errors;
+                }
+                touchedDisk = true;
+                foreach (var m in moves.Where(m => PathRules.IsUnder(m.from, from))) m.from = to + m.from.Substring(from.Length);
+            }
+            foreach (var m in moves.Where(m => m.from != m.to && string.Equals(m.from, m.to, StringComparison.OrdinalIgnoreCase)))
+            {
+                var err = CaseRename(m.from, m.to);
+                if (err != null)
+                {
+                    errors.Add($"Could not move {m}: {err}");
+                    return errors;
+                }
+                touchedDisk = true;
+                m.from = m.to;
+            }
+
             // Before StartAssetEditing: a folder created inside it is not in the database yet, so MoveAsset into it fails.
             foreach (var f in plan.createFolders)
             {
@@ -49,7 +76,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             AssetDatabase.StartAssetEditing();
             try
             {
-                foreach (var m in plan.moves.OrderBy(m => m.to.EndsWith(".asmdef", StringComparison.OrdinalIgnoreCase) ? 0 : 1))
+                foreach (var m in moves.Where(m => m.from != m.to).OrderBy(m => m.to.EndsWith(".asmdef", StringComparison.OrdinalIgnoreCase) ? 0 : 1))
                 {
                     var err = AssetDatabase.MoveAsset(m.from, m.to);
                     if (string.IsNullOrEmpty(err))
@@ -126,7 +153,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (!File.Exists(m.from)) errors.Add($"Cannot move {m}: the source is missing");
                 else if ((File.Exists(m.to) || Directory.Exists(m.to)) && !string.Equals(m.from, m.to, StringComparison.OrdinalIgnoreCase))
                     errors.Add($"Cannot move {m}: the destination is taken");
-                else if (!AssetDatabase.IsValidFolder(dir) && !folders.Contains(dir)) errors.Add($"Cannot move {m}: folder {dir} does not exist");
+                else if (!AssetDatabase.IsValidFolder(dir) && !folders.Contains(dir) && !Directory.Exists(dir)) // a case-only folder rename
+                    errors.Add($"Cannot move {m}: folder {dir} does not exist");
             }
             var newPath = plan.moves.GroupBy(m => m.guid).ToDictionary(g => g.Key, g => g.Last().to);
             var texts = new List<(string, byte[])>();
@@ -187,6 +215,41 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (!SourceRewriter.TryAddMovedFrom(text, type, oldNs, oldAsm, out text))
                     errors.Add($"MovedFrom target not found: {type} in {path}");
             return text;
+        }
+
+        // Folders on the way to each target that exist on disk under another case (to rename), outermost first.
+        static List<(string from, string to)> FolderCaseRenames(IEnumerable<string> targets)
+        {
+            var list = new List<(string, string)>();
+            foreach (var t in targets)
+            {
+                var parts = PathRules.Norm(t).Split('/');
+                for (var i = 1; i < parts.Length - 1; i++)
+                {
+                    var parent = string.Join("/", parts, 0, i);
+                    var actual = Directory.Exists(parent)
+                        ? Directory.GetDirectories(parent).Select(Path.GetFileName).FirstOrDefault(n => string.Equals(n, parts[i], StringComparison.OrdinalIgnoreCase))
+                        : null;
+                    if (actual == null) break; // created by the plan
+                    var rename = (parent + "/" + actual, parent + "/" + parts[i]);
+                    if (actual != parts[i] && !list.Contains(rename)) list.Add(rename);
+                }
+            }
+            return list;
+        }
+
+        // A case-only rename (X -> x) of a file or folder, through a temporary name: MoveAsset refuses a target that differs
+        // only in case. Null when it worked; on a failed second step the asset goes back to its old name.
+        static string CaseRename(string from, string to)
+        {
+            var ext = Path.GetExtension(from);
+            var tmp = from.Substring(0, from.Length - ext.Length) + "__monome_tmp" + ext;
+            var err = AssetDatabase.MoveAsset(from, tmp);
+            if (!string.IsNullOrEmpty(err)) return err;
+            err = AssetDatabase.MoveAsset(tmp, to);
+            if (string.IsNullOrEmpty(err)) return null;
+            AssetDatabase.MoveAsset(tmp, from);
+            return err;
         }
 
         // Only GUIDs the project really holds are recorded; the rest only after a fully clean run.

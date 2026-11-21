@@ -314,6 +314,15 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void AsmdefMovedToTheModulesRootItself_IsAccepted()
+        {
+            Asmdef("a1", "Assets/_Scripts/Game.Combat.asmdef", "Game.Combat");
+            disk.scriptPathByGuid["s1"] = "Assets/_Scripts/Weapon.cs";
+            Assert.That(ModuleSync.AcceptDisk(cfg, disk, Diff()), Is.Empty, "the root counts as inside, as for the planner");
+            Assert.That(combat.folder, Is.EqualTo("Assets/_Scripts"));
+        }
+
+        [Test]
         public void AsmdefMovedOutsideScopeAndModulesRoot_IsRefused_AndStaysDrift()
         {
             Asmdef("a1", "Assets/Elsewhere/Game.Combat.asmdef", "Game.Combat");

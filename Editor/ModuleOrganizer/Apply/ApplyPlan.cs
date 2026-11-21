@@ -299,7 +299,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             void Cleanup(string dir, string moduleFolder)
             {
                 if (moduleFolder == null) return;
-                for (var d = dir; d == moduleFolder || PathRules.IsUnder(d, moduleFolder); d = Dir(d))
+                for (var d = dir; PathRules.IsInside(d, moduleFolder); d = Dir(d))
                     if (!roots.Contains(d) && roots.Any(r => PathRules.IsUnder(d, r))) cleanup.Add(d);
             }
 

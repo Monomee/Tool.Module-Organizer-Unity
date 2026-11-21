@@ -73,12 +73,13 @@ namespace Monome.UtilityPack.ModuleOrganizer
     {
         internal static string Norm(string p) => (p ?? "").Replace('\\', '/').TrimEnd('/');
 
-        public static bool IsUnder(string path, string folder)
-        {
-            path = Norm(path);
-            folder = Norm(folder);
-            return path.StartsWith(folder + "/", StringComparison.Ordinal);
-        }
+        // Strictly below folder. Ignoring case: Unity asset paths are case-insensitive on Windows and macOS.
+        public static bool IsUnder(string path, string folder) =>
+            Norm(path).StartsWith(Norm(folder) + "/", StringComparison.OrdinalIgnoreCase);
+
+        // The folder itself or below it: the write boundary (planner, Sync) and module-folder checks.
+        public static bool IsInside(string path, string folder) =>
+            string.Equals(Norm(path), Norm(folder), StringComparison.OrdinalIgnoreCase) || IsUnder(path, folder);
 
         public static string ScopeRelativeDir(string originalPath, IReadOnlyList<string> scopeFolders)
         {

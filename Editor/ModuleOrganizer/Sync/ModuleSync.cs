@@ -166,7 +166,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         var dir = Dir(PathRules.Norm(a.path));
                         if (editor && dir.EndsWith("/Editor", StringComparison.Ordinal)) dir = Dir(dir);
                         // Apply only writes inside the scope folders and the modules root; a folder elsewhere stays drift.
-                        if (!roots.Any(r => PathRules.IsUnder(dir, r)))
+                        if (!roots.Any(r => PathRules.IsInside(dir, r)))
                         {
                             refused.Add($"{m.name}: {a.path} is not inside a scope folder or the modules root; move it back or add its folder to the scope.");
                             blocked.Add(m.name);
@@ -242,7 +242,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             if (!PathRules.IsUnder(path, folder)) return false;
             return !disk.asmdefsByGuid.Where(kv => kv.Key != m.asmdefGuid && kv.Key != m.editorAsmdefGuid)
                 .Select(kv => Dir(PathRules.Norm(kv.Value.path)))
-                .Any(d => (d == folder || PathRules.IsUnder(d, folder)) && PathRules.IsUnder(path, d));
+                .Any(d => PathRules.IsInside(d, folder) && PathRules.IsUnder(path, d));
         }
 
         static string Dir(string path) => path.Contains('/') ? path.Substring(0, path.LastIndexOf('/')) : "";
