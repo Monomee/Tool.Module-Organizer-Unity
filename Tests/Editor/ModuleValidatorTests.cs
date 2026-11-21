@@ -505,9 +505,66 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             var i = Single(Validate(scan), IssueCode.InternalAccess);
             Assert.AreEqual(Severity.Error, i.severity);
             Assert.AreEqual(S + "B.cs", i.path);
-            StringAssert.Contains("InternalsVisibleTo is not supported", i.message);
+            StringAssert.Contains("Game.Combat grants no InternalsVisibleTo(\"Assembly-CSharp\")", i.message);
             Assign("Combat", scan, "b");
             Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.InternalAccess));
+        }
+
+        [Test]
+        public void InternalUse_OfAPackageType_NeedsInternalsVisibleToTheFinalAssembly()
+        {
+            var scan = Scan(F(S + "B.cs", "b", AssemblyKind.Runtime, "Game.B", "Pkg.Secret"));
+            scan.types["Pkg.Secret"] = new TypeRecord { fullName = "Pkg.Secret", ns = "Pkg", assemblyName = "Pkg.Core", kind = AssemblyKind.AsmDef };
+            scan.files["b"].internalRefs.Add("Pkg.Secret");
+            scan.internalsVisibleTo["Pkg.Core"] = new HashSet<string> { "Assembly-CSharp" };
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.InternalAccess), "compiles today through IVT");
+            Assign("Combat", scan, "b");
+            var i = Single(Validate(scan), IssueCode.InternalAccess);
+            StringAssert.Contains("Pkg.Core grants no InternalsVisibleTo(\"Game.Combat\")", i.message);
+            scan.internalsVisibleTo["Pkg.Core"].Add("Game.Combat");
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.InternalAccess), "granted to the final assembly too");
+        }
+
+        [Test]
+        public void InternalUse_GrantedToTheFinalAssembly_IsFine_ButNotWhenTheDeclarerMovesToo()
+        {
+            var scan = Scan(F(S + "A.cs", "a", AssemblyKind.Runtime, "Game.A"),
+                F(S + "B.cs", "b", AssemblyKind.Runtime, "Game.B", "Game.A"));
+            scan.files["b"].internalRefs.Add("Game.A");
+            scan.internalsVisibleTo["Assembly-CSharp"] = new HashSet<string> { "Game.UI" };
+            Assign("UI", scan, "b");
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.InternalAccess), "Assembly-CSharp grants Game.UI");
+            Assign("Combat", scan, "a");
+            Assert.AreEqual(Severity.Error, Single(Validate(scan), IssueCode.InternalAccess).severity, "the grant stays behind in Assembly-CSharp");
+        }
+
+        [Test]
+        public void InternalUse_OfACompilerEmittedTypeOfItsOwnAssembly_IsIgnored()
+        {
+            var scan = Scan(F(S + "B.cs", "b", AssemblyKind.Runtime, "Game.B", "System.Runtime.CompilerServices.IsReadOnlyAttribute"));
+            scan.files["b"].assemblyName = "Assembly-CSharp";
+            scan.types["System.Runtime.CompilerServices.IsReadOnlyAttribute"] = new TypeRecord
+                { fullName = "System.Runtime.CompilerServices.IsReadOnlyAttribute", ns = "System.Runtime.CompilerServices", assemblyName = "Assembly-CSharp", kind = AssemblyKind.Runtime };
+            scan.files["b"].internalRefs.Add("System.Runtime.CompilerServices.IsReadOnlyAttribute");
+            Assign("Combat", scan, "b");
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.InternalAccess), "the compiler emits it into the new assembly too");
+        }
+
+        [Test]
+        public void PublicTypeDeclaredByTwoAssembliesTheFinalAssemblySees_IsDuplicateTypeName()
+        {
+            var scan = Scan(F(S + "A.cs", "a", AssemblyKind.Runtime, "Game.A", "Json.Node"));
+            var pkg = new TypeRecord { fullName = "Json.Node", ns = "Json", assemblyName = "Pkg.Json", kind = AssemblyKind.AsmDef, asmdefGuid = "0123456789abcdef0123456789abcdef" };
+            var dll = new TypeRecord { fullName = "Json.Node", ns = "Json", assemblyName = "Vendor.Json", kind = AssemblyKind.Precompiled, autoReferencedDll = true };
+            scan.types["Json.Node"] = pkg;
+            scan.publicDeclarers["Json.Node"] = new List<TypeRecord> { pkg, dll };
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.DuplicateTypeName), "nothing moves");
+            Assign("Combat", scan, "a"); // references Pkg.Json by GUID and sees every auto-referenced DLL
+            var i = Single(Validate(scan), IssueCode.DuplicateTypeName);
+            Assert.AreEqual(S + "A.cs", i.path);
+            StringAssert.Contains("Pkg.Json and Vendor.Json", i.message);
+            dll.autoReferencedDll = false;
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.DuplicateTypeName), "the DLL is not seen");
         }
 
         [Test]

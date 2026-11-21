@@ -109,7 +109,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var cleanup = new HashSet<string>();
             var roots = new HashSet<string>(cfg.scopeFolders.Select(PathRules.Norm).Append(PathRules.Norm(cfg.EffectiveModulesRoot)));
-            List<FinalType> finalTypes = null;
+            var vis = new Visibility(cfg, scan, fates, report);
 
             foreach (var f in files)
             {
@@ -240,11 +240,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
             List<string> UnreachableUsings(ScriptFile f)
             {
                 if (fates.ModuleOf(f) == null) return new List<string>(); // Assembly-CSharp(-Editor) sees every auto-referenced asmdef
-                var sees = Sees(f);
+                var sees = vis.Sees(f);
                 var enclosing = fates.Enclosing(f);
                 return fates.FileUsings(f).Where(n => !enclosing.Contains(n)).Where(n =>
                 {
-                    var holders = FinalTypes().Where(t => t.ns == n || t.ns.StartsWith(n + ".", StringComparison.Ordinal)).ToList();
+                    var holders = vis.TopLevel().Where(t => t.ns == n || t.ns.StartsWith(n + ".", StringComparison.Ordinal)).ToList();
                     return holders.Count > 0 && holders.All(t => t.node != null && !sees(t));
                 }).ToList();
             }
@@ -261,8 +261,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 var result = new List<(string, string)>();
                 var final = fates.Changes(f, out _, out var n) ? n : FileFates.CurrentNamespace(fates.Info(f));
                 if (string.IsNullOrEmpty(final)) return result; // global (nothing encloses it) or not rewritable
-                var sees = Sees(f);
-                var namespaces = new HashSet<string>(FinalTypes().Where(sees).SelectMany(t => ModuleValidator.Prefixes(t.ns)));
+                var sees = vis.Sees(f);
+                var namespaces = new HashSet<string>(vis.TopLevel().Where(sees).SelectMany(t => ModuleValidator.Prefixes(t.ns)));
                 namespaces.UnionWith(ModuleValidator.Prefixes(final));
                 var names = ModuleValidator.UnqualifiedNames(src, false);
                 names.ExceptWith(SourceRewriter.BlockAliasNames(src));
@@ -278,75 +278,6 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 }
                 return result.OrderBy(x => x.Item1, StringComparer.Ordinal).ToList();
             }
-
-            // Which top-level types (after Apply) f's target assembly sees. Never an Editor-only one from a runtime target. Else:
-            // its own assembly; Engine types; precompiled DLLs that are auto-referenced or that it names; for a module asmdef,
-            // the modules and outside asmdefs it references (report edges/asmdefRefs, extra references; an Editor asmdef also
-            // its runtime one); for Assembly-CSharp(-Editor), every auto-referenced asmdef (modules included) and the
-            // predefined assemblies before it (firstpass; Assembly-CSharp for -Editor).
-            Func<FinalType, bool> Sees(ScriptFile f)
-            {
-                var m = fates.ModuleOf(f);
-                var editor = f.IsEditor;
-                var own = fates.TargetAssembly(f) ?? (editor ? "Assembly-CSharp-Editor" : "Assembly-CSharp"); // assignable, unassigned: predefined
-                var nodes = new HashSet<string>();
-                var refs = new HashSet<string>();
-                if (m != null)
-                {
-                    var node = Node(m, editor);
-                    nodes.UnionWith(report.edges.Where(e => e.from == node).Select(e => e.to));
-                    nodes.Add(node);
-                    if (editor) nodes.Add(m.name);
-                    refs.UnionWith(m.extraReferences.Concat(editor ? m.editorExtraReferences : new List<string>())
-                        .Concat(report.asmdefRefs.TryGetValue(node, out var outside) ? outside : new HashSet<string>()).Select(NormRef));
-                    foreach (var x in cfg.modules)
-                    foreach (var ed in new[] { false, true })
-                    {
-                        var g = ed ? x.editorAsmdefGuid : x.asmdefGuid;
-                        if (refs.Contains(PathRules.AsmdefName(x, ed)) || (!string.IsNullOrEmpty(g) && refs.Contains("GUID:" + g))) nodes.Add(Node(x, ed));
-                    }
-                }
-                return t =>
-                {
-                    if (t.editor && !editor) return false;
-                    if (t.asm == own) return true;
-                    switch (t.kind)
-                    {
-                        case AssemblyKind.Engine: return true;
-                        case AssemblyKind.Precompiled: return t.autoDll || refs.Contains(t.asm) || refs.Contains(t.asm + ".dll");
-                        case AssemblyKind.AsmDef:
-                            if (m == null) return t.autoReferenced;
-                            return t.node != null ? nodes.Contains(t.node)
-                                : t.asmdefGuid != null && refs.Contains("GUID:" + t.asmdefGuid) || refs.Contains(t.asm);
-                        case AssemblyKind.FirstPass: return m == null;
-                        case AssemblyKind.FirstPassEditor:
-                        case AssemblyKind.Runtime: return m == null && editor; // Assembly-CSharp itself is caught by own
-                        default: return false; // Editor = Assembly-CSharp-Editor: only itself
-                    }
-                };
-            }
-
-            List<FinalType> FinalTypes() => finalTypes ??= scan.types.Values.Where(t => !t.fullName.Contains('/')).Select(t =>
-            {
-                var tf = t.filePaths.Count > 0 ? fates.FileAt(t.filePaths[0]) : null;
-                var tm = tf == null ? null : fates.ModuleOf(tf);
-                var target = tf == null ? null : fates.TargetAssembly(tf); // module asmdef or Assembly-CSharp(-Editor) after a restore
-                var kind = tm != null ? AssemblyKind.AsmDef
-                    : target == null ? t.kind
-                    : tf.IsEditor ? AssemblyKind.Editor : AssemblyKind.Runtime;
-                return new FinalType
-                {
-                    ns = moved.TryGetValue(t.fullName, out var mv) ? mv.newNs : t.ns ?? "",
-                    node = tm == null ? null : Node(tm, tf.IsEditor),
-                    asm = target ?? t.assemblyName,
-                    kind = kind,
-                    editor = tf?.IsEditor ?? (t.editorOnly || t.kind is AssemblyKind.Editor or AssemblyKind.FirstPassEditor ||
-                                              t.kind == AssemblyKind.Engine && (t.assemblyName ?? "").StartsWith("UnityEditor", StringComparison.Ordinal)),
-                    asmdefGuid = kind == AssemblyKind.AsmDef && tm == null ? t.asmdefGuid : null,
-                    autoReferenced = tm != null || !t.notAutoReferenced, // tool asmdefs are auto-referenced
-                    autoDll = t.autoReferencedDll,
-                };
-            }).ToList();
 
             string CurrentPath(string guid) => disk.pathByGuid.TryGetValue(guid, out var p) ? p : null;
 
@@ -414,15 +345,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
 
         internal static string NormRef(string r) => r != null && GuidRx.IsMatch(r) ? "GUID:" + r : r;
 
-        static string Node(Module m, bool editor) => m.name + (editor ? ".Editor" : "");
-
-        // A top-level type after Apply: namespace and where it lives (module node, else assembly; asmdefGuid for an outside asmdef).
-        class FinalType
-        {
-            public string ns, node, asm, asmdefGuid;
-            public AssemblyKind kind;
-            public bool editor, autoReferenced, autoDll;
-        }
+        internal static string Node(Module m, bool editor) => m.name + (editor ? ".Editor" : "");
 
         // Outward from ns: reaching the type's own namespace resolves it; a child namespace with its name shadows it first.
         static bool Shadowed(string ns, string typeNs, string simple, HashSet<string> namespaces)

@@ -177,4 +177,104 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 remove.OrderBy(n => n, StringComparer.Ordinal).ToList());
         }
     }
+
+    // A top-level type after Apply: namespace and where it lives (module node, else assembly; asmdefGuid for an outside asmdef).
+    class PlacedType
+    {
+        public string ns, node, asm, asmdefGuid;
+        public AssemblyKind kind;
+        public bool editor, autoReferenced, autoDll;
+    }
+
+    // Which types each file's assembly sees after Apply: the one rule shadow aliases, unreachable usings and type collisions
+    // use. Needs the report's edges and asmdefRefs (they decide a module asmdef's references).
+    class Visibility
+    {
+        readonly ModuleConfig cfg;
+        readonly ScanResult scan;
+        readonly FileFates fates;
+        readonly ValidationReport report;
+        readonly Dictionary<TypeRecord, PlacedType> placed = new Dictionary<TypeRecord, PlacedType>();
+        List<PlacedType> all;
+
+        public Visibility(ModuleConfig cfg, ScanResult scan, FileFates fates, ValidationReport report)
+        {
+            this.cfg = cfg;
+            this.scan = scan;
+            this.fates = fates;
+            this.report = report;
+        }
+
+        public List<PlacedType> TopLevel() => all ??= scan.types.Values.Where(t => !t.fullName.Contains('/')).Select(Place).ToList();
+
+        public PlacedType Place(TypeRecord t)
+        {
+            if (placed.TryGetValue(t, out var p)) return p;
+            var tf = t.filePaths.Count > 0 ? fates.FileAt(t.filePaths[0]) : null;
+            var tm = tf == null ? null : fates.ModuleOf(tf);
+            var target = tf == null ? null : fates.TargetAssembly(tf); // module asmdef or Assembly-CSharp(-Editor) after a restore
+            var kind = tm != null ? AssemblyKind.AsmDef
+                : target == null ? t.kind
+                : tf.IsEditor ? AssemblyKind.Editor : AssemblyKind.Runtime;
+            return placed[t] = new PlacedType
+            {
+                ns = fates.MovedTypes().TryGetValue(t.fullName, out var mv) ? mv.newNs : t.ns ?? "",
+                node = tm == null ? null : ApplyPlanner.Node(tm, tf.IsEditor),
+                asm = target ?? t.assemblyName,
+                kind = kind,
+                editor = tf?.IsEditor ?? (t.editorOnly || t.kind is AssemblyKind.Editor or AssemblyKind.FirstPassEditor ||
+                                          t.kind == AssemblyKind.Engine && (t.assemblyName ?? "").StartsWith("UnityEditor", StringComparison.Ordinal)),
+                asmdefGuid = kind == AssemblyKind.AsmDef && tm == null ? t.asmdefGuid : null,
+                autoReferenced = tm != null || !t.notAutoReferenced, // tool asmdefs are auto-referenced
+                autoDll = t.autoReferencedDll,
+            };
+        }
+
+        // Which types (after Apply) f's target assembly sees. Never an Editor-only one from a runtime target. Else:
+        // its own assembly; Engine types; precompiled DLLs that are auto-referenced or that it names; for a module asmdef,
+        // the modules and outside asmdefs it references (report edges/asmdefRefs, extra references; an Editor asmdef also
+        // its runtime one); for Assembly-CSharp(-Editor), every auto-referenced asmdef (modules included) and the
+        // predefined assemblies before it (firstpass; Assembly-CSharp for -Editor).
+        public Func<PlacedType, bool> Sees(ScriptFile f)
+        {
+            var m = fates.ModuleOf(f);
+            var editor = f.IsEditor;
+            var own = fates.TargetAssembly(f) ?? fates.CurrentAssembly(f);
+            var nodes = new HashSet<string>();
+            var refs = new HashSet<string>();
+            if (m != null)
+            {
+                var node = ApplyPlanner.Node(m, editor);
+                nodes.UnionWith(report.edges.Where(e => e.from == node).Select(e => e.to));
+                nodes.Add(node);
+                if (editor) nodes.Add(m.name);
+                refs.UnionWith(m.extraReferences.Concat(editor ? m.editorExtraReferences : new List<string>())
+                    .Concat(report.asmdefRefs.TryGetValue(node, out var outside) ? outside : new HashSet<string>()).Select(ApplyPlanner.NormRef));
+                foreach (var x in cfg.modules)
+                foreach (var ed in new[] { false, true })
+                {
+                    var g = ed ? x.editorAsmdefGuid : x.asmdefGuid;
+                    if (refs.Contains(PathRules.AsmdefName(x, ed)) || (!string.IsNullOrEmpty(g) && refs.Contains("GUID:" + g))) nodes.Add(ApplyPlanner.Node(x, ed));
+                }
+            }
+            return t =>
+            {
+                if (t.editor && !editor) return false;
+                if (t.asm == own) return true;
+                switch (t.kind)
+                {
+                    case AssemblyKind.Engine: return true;
+                    case AssemblyKind.Precompiled: return t.autoDll || refs.Contains(t.asm) || refs.Contains(t.asm + ".dll");
+                    case AssemblyKind.AsmDef:
+                        if (m == null) return t.autoReferenced;
+                        return t.node != null ? nodes.Contains(t.node)
+                            : t.asmdefGuid != null && refs.Contains("GUID:" + t.asmdefGuid) || refs.Contains(t.asm);
+                    case AssemblyKind.FirstPass: return m == null;
+                    case AssemblyKind.FirstPassEditor:
+                    case AssemblyKind.Runtime: return m == null && editor; // Assembly-CSharp itself is caught by own
+                    default: return false; // Editor = Assembly-CSharp-Editor: only itself
+                }
+            };
+        }
+    }
 }

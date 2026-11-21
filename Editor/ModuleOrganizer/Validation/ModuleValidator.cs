@@ -193,6 +193,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
 
             r.edges = edges.Values.OrderBy(e => e.from, StringComparer.Ordinal).ThenBy(e => e.to, StringComparer.Ordinal).ToList();
+            CheckTypeCollisions();
             r.cycles = CycleFinder.Find(r.edges.GroupBy(e => e.from).ToDictionary(g => g.Key, g => new HashSet<string>(g.Select(e => e.to))));
             foreach (var cycle in r.cycles)
             {
@@ -293,21 +294,48 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 }
             }
 
-            // Internal types and members stay reachable only inside one assembly. Pairs whose assemblies Apply leaves
-            // alone are skipped: they compile today (InternalsVisibleTo, or one assembly) and keep doing so.
+            // Internal types and members stay reachable only inside their assembly and its InternalsVisibleTo friends. A
+            // declaring type with no file (a package or DLL) is placed by its record. Error when, after Apply, the two sides
+            // are apart and the declaring assembly (unchanged) does not grant the file's final assembly. Pairs whose
+            // assemblies Apply leaves alone are skipped: they compile today and keep doing so.
             void CheckInternalAccess()
             {
                 foreach (var f in files)
                 foreach (var tn in f.internalRefs.OrderBy(t => t, StringComparer.Ordinal))
                 {
-                    if (!scan.types.TryGetValue(tn, out var t) || t.filePaths.Count == 0) continue;
-                    var tf = FileAt(t.filePaths[0]);
-                    if (tf == null || tf == f) continue;
-                    var (from, to) = (fates.FinalAssembly(f), fates.FinalAssembly(tf));
-                    if (from == to || (from == fates.CurrentAssembly(f) && to == fates.CurrentAssembly(tf))) continue;
+                    if (!scan.types.TryGetValue(tn, out var t)) continue;
+                    var tf = t.filePaths.Count > 0 ? FileAt(t.filePaths[0]) : null;
+                    if (tf == f) continue;
+                    var (fromNow, from) = (fates.CurrentAssembly(f), fates.FinalAssembly(f));
+                    if (tf == null && (t.assemblyName == null || t.assemblyName == fromNow)) continue; // compiler-emitted into f's own assembly
+                    var (toNow, to) = tf != null ? (fates.CurrentAssembly(tf), fates.FinalAssembly(tf)) : (t.assemblyName, t.assemblyName);
+                    if (from == to || (from == fromNow && to == toNow)) continue;
+                    if (to == toNow && scan.internalsVisibleTo.TryGetValue(to, out var friends) && friends.Contains(from)) continue;
                     Add(Severity.Error, IssueCode.InternalAccess, f.path,
-                        $"{f.path} uses non-public {tn} ({tf.path}), but after Apply they are in different assemblies ({from} / {to}). " +
-                        "Make it public or keep both files in one module (InternalsVisibleTo is not supported).");
+                        $"{f.path} uses non-public {tn} ({tf?.path ?? to}), but after Apply they are in different assemblies ({from} / {to}) " +
+                        $"and {to} grants no InternalsVisibleTo(\"{from}\"). Make it public, keep both files in one module, or add " +
+                        $"[assembly: InternalsVisibleTo(\"{from}\")] to {to}.");
+                }
+            }
+
+            // A file whose assembly changes must not see two assemblies declaring a public full name it uses (CS0433).
+            void CheckTypeCollisions()
+            {
+                var vis = new Visibility(cfg, scan, fates, r);
+                foreach (var f in files.Where(f => IsAssignable(f, cfg)))
+                {
+                    var target = fates.TargetAssembly(f);
+                    if (target == null || target == fates.CurrentAssembly(f)) continue;
+                    var sees = vis.Sees(f);
+                    foreach (var tn in f.referencedTypes.Select(Outer).Distinct().OrderBy(n => n, StringComparer.Ordinal))
+                    {
+                        if (!scan.publicDeclarers.TryGetValue(tn, out var decls)) continue;
+                        var seen = decls.Where(d => sees(vis.Place(d))).Select(d => d.assemblyName).Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList();
+                        if (seen.Count > 1)
+                            Add(Severity.Error, IssueCode.DuplicateTypeName, f.path,
+                                $"{f.path} uses {tn}, which {string.Join(" and ", seen)} both declare; after Apply its assembly {target} sees both (CS0433). " +
+                                "Rename one, or keep the file where it is.");
+                    }
                 }
             }
 

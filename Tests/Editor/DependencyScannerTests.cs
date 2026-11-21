@@ -109,6 +109,44 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void ProtectedInternal_IsInternalRef_OnlyFromATypeThatDoesNotDerive()
+        {
+            CollectionAssert.AreEquivalent(new[] { "FxProtected" }, F("Scope/FxProtectedUser.cs").internalRefs);
+            CollectionAssert.IsEmpty(F("Scope/FxProtectedHeir.cs").internalRefs);
+        }
+
+        [Test]
+        public void InternalsVisibleTo_IsReadPerAssembly()
+        {
+            CollectionAssert.AreEquivalent(new[] { "Game.Friend" }, S.internalsVisibleTo["Fx.Twins"]);
+            CollectionAssert.IsEmpty(S.internalsVisibleTo["Assembly-CSharp"]);
+        }
+
+        [Test]
+        public void InlinedConst_FullyQualifiedOrThroughAGenericType_IsReferencedFromSource()
+        {
+            var refs = F("Scope/FxQualifiedUser.cs").referencedTypes;
+            CollectionAssert.Contains(refs, "FxNs.Inner.FxNsConst");
+            CollectionAssert.Contains(refs, "FxNs.Inner.FxGenConst`1");
+        }
+
+        [Test]
+        public void PseudoAttributeAlsoReferencedInIl_GetsItsRecord_DefaultStructLayoutIsNoAttribute()
+        {
+            Assert.IsTrue(S.types.ContainsKey("System.SerializableAttribute"));
+            CollectionAssert.Contains(F("Scope/FxPseudo.cs").referencedTypes, "System.SerializableAttribute");
+            CollectionAssert.DoesNotContain(F("Scope/FxPseudo.cs").referencedTypes, "System.Runtime.InteropServices.StructLayoutAttribute");
+        }
+
+        [Test]
+        public void PublicDeclarers_ListEveryAssemblyDeclaringAName_KeptRecordAmongThem()
+        {
+            Assert.IsFalse(S.publicDeclarers.ContainsKey("FxA"));
+            CollectionAssert.AreEquivalent(new[] { "Assembly-CSharp", "Fx.Twins" }, S.publicDeclarers["FxTwin"].Select(r => r.assemblyName));
+            CollectionAssert.Contains(S.publicDeclarers["FxTwin"], S.types["FxTwin"]);
+        }
+
+        [Test]
         public void TypeInTwoAssetsAssemblies_IsDuplicate_AndAssembliesAreListed()
         {
             CollectionAssert.AreEquivalent(new[] { "Assets/_Fixtures/Twins/A/FxTwin.cs", "Assets/_Fixtures/Twins/B/FxTwin.cs" }, S.duplicateTypes["FxTwin"]);

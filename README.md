@@ -89,8 +89,12 @@ lại `Assembly-CSharp(-Editor)`, miễn là thư mục cũ không nằm trong t
   đó có thể mất. Hãy để ít nhất một phần của kiểu nằm ngoài `#if`.
 - **`unsafe` tính theo từng module.** Nếu một file của module có từ khóa `unsafe`, asmdef của module đó (runtime hoặc
   Editor, theo phía của file) được bật `allowUnsafeCode`.
-- **Kiểu hoặc thành viên `internal`** dùng qua ranh giới module mới sẽ chặn Apply (`InternalAccess`): đổi sang `public`
-  hoặc để hai file chung một module. `InternalsVisibleTo` không được hỗ trợ.
+- **Kiểu hoặc thành viên `internal`** (cả `protected internal` dùng từ lớp không kế thừa) dùng qua ranh giới module mới
+  sẽ chặn Apply (`InternalAccess`): đổi sang `public` hoặc để hai file chung một module. `InternalsVisibleTo` được tính:
+  không chặn khi assembly khai báo (không bị Apply chuyển) đã có `[assembly: InternalsVisibleTo("<tên assembly sau Apply>")]`,
+  ví dụ `"Game.Combat"`; chỉ cấp cho `Assembly-CSharp` thì chưa đủ.
+- **Kiểu `public` cùng tên đầy đủ trong hai assembly** (ví dụ một package và một DLL): nếu sau Apply assembly của file
+  thấy cả hai, Apply bị chặn (`DuplicateTypeName`, tránh lỗi CS0433).
 - **Apply lỗi giữa chừng khi đang chuyển file** có thể để lại một file đã chuyển mà chưa có `[MovedFrom]`. Vì vậy hãy
   commit trước khi Apply, và khi có lỗi thì quay lại bằng git (`git checkout` / `git clean` trong thư mục bị ảnh hưởng).
 

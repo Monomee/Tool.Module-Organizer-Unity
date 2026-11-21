@@ -43,6 +43,12 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public Dictionary<string, List<string>> duplicateTypes = new Dictionary<string, List<string>>();
         // Every script and precompiled assembly name -> its asmdef GUID ("" when it has none).
         public Dictionary<string, string> assemblies = new Dictionary<string, string>();
+        // Assembly name -> the assembly names its [InternalsVisibleTo] grants: every script assembly, plus each other
+        // assembly a file reaches something non-public in.
+        public Dictionary<string, HashSet<string>> internalsVisibleTo = new Dictionary<string, HashSet<string>>();
+        // Public top-level full names declared by two or more assemblies (script assemblies and user DLLs) -> one record per
+        // declaration. The record types keeps is among them. A file seeing two of them gets CS0433.
+        public Dictionary<string, List<TypeRecord>> publicDeclarers = new Dictionary<string, List<TypeRecord>>();
 
         public ScriptFile FileByPath(string path)
         {
