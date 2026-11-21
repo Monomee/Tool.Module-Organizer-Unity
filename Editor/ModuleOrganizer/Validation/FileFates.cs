@@ -178,21 +178,25 @@ namespace Monome.UtilityPack.ModuleOrganizer
         }
 
         // The usings Apply once added (marked) that f no longer needs, sorted; Apply drops only the marked line. Redundant:
-        // f's final namespace is that namespace or inside it. Stale: no type f references (per the Editor IL) ends up there,
+        // every namespace block of f ends up in that namespace or inside it. Stale: no type f references (per the Editor IL) ends up there,
         // and no identifier f writes unqualified in any #if branch (player-only code, nameof) is a type name declared there
         // after Apply.
         public List<string> StaleMarkedUsings(ScriptFile f)
         {
             var marked = SourceRewriter.MarkedUsings(source(f));
             if (marked.Count == 0) return marked;
-            var enclosing = Enclosing(f);
+            // Marked usings are file-level (AddUsing writes them at the top): redundant only when every namespace block of
+            // the file ends up in n or below it.
+            var blocks = Changes(f, out _, out var newNs) ? new List<string> { newNs } : Info(f).namespaces;
+            bool AllEnclosed(string n) => blocks.Count > 0 && blocks.All(b => b == n || b.StartsWith(n + ".", StringComparison.Ordinal));
             var m = MovedTypes();
             string Final(string outer) => m.TryGetValue(outer, out var mv) ? mv.newNs : scan.types.TryGetValue(outer, out var t) ? t.ns ?? "" : ModuleValidator.NsOf(outer);
             var needed = new HashSet<string>(f.referencedTypes.Select(ModuleValidator.Outer).Select(Final));
-            var written = ModuleValidator.UnqualifiedNames(source(f));
+            // Raw identifiers, aliases not subtracted: an alias under one #if branch must not hide a plain use in another.
+            var written = ModuleValidator.UnqualifiedNames(source(f), false);
             bool Declares(string ns) => scan.types.Keys.Where(n => !n.Contains('/') && Final(n) == ns)
                 .Any(n => written.Contains(ModuleValidator.SimpleName(n).Split('`')[0]));
-            return marked.Where(n => enclosing.Contains(n) || !needed.Contains(n) && !Declares(n)).OrderBy(n => n, StringComparer.Ordinal).ToList();
+            return marked.Where(n => AllEnclosed(n) || !needed.Contains(n) && !Declares(n)).OrderBy(n => n, StringComparer.Ordinal).ToList();
         }
     }
 
@@ -236,7 +240,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 : tf.IsEditor ? AssemblyKind.Editor : AssemblyKind.Runtime;
             return placed[t] = new PlacedType
             {
-                ns = fates.MovedTypes().TryGetValue(t.fullName, out var mv) ? mv.newNs : t.ns ?? "",
+                // Moves are keyed by name; only the scan's own record of that name is the moved one (not a twin's).
+                ns = scan.types.TryGetValue(t.fullName, out var own) && own == t && fates.MovedTypes().TryGetValue(t.fullName, out var mv) ? mv.newNs : t.ns ?? "",
                 node = tm == null ? null : ApplyPlanner.Node(tm, tf.IsEditor),
                 asm = target ?? t.assemblyName,
                 kind = kind,

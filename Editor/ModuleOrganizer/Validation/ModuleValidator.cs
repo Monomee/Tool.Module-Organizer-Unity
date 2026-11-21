@@ -323,8 +323,16 @@ namespace Monome.UtilityPack.ModuleOrganizer
             {
                 // Every file whose references Apply decides (module files, Assembly-CSharp(-Editor)): a stay-put file also
                 // collides when a declarer moves out of its assembly or its asmdef gains a reference. Its own assembly
-                // still declaring the name wins (CS0436, a warning).
+                // still declaring the name wins (CS0436, a warning). Names compare after Apply: a local Json.Node that becomes
+                // Game.Combat.Node no longer meets a package's Json.Node. Files in asmdefs the tool did not make are skipped:
+                // Apply never moves them, they cannot see Assembly-CSharp, and they see only the assemblies they reference.
                 var vis = new Visibility(cfg, scan, fates, r);
+                string FinalName(TypeRecord d)
+                {
+                    var rest = string.IsNullOrEmpty(d.ns) ? d.fullName : d.fullName.Substring(d.ns.Length + 1);
+                    var ns = vis.Place(d).ns;
+                    return ns.Length == 0 ? rest : ns + "." + rest;
+                }
                 foreach (var f in files.Where(f => fates.ModuleOf(f) != null || f.kind is AssemblyKind.Runtime or AssemblyKind.Editor))
                 {
                     var own = fates.TargetAssembly(f) ?? fates.CurrentAssembly(f);
@@ -332,12 +340,13 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     foreach (var tn in f.referencedTypes.Select(Outer).Distinct().OrderBy(n => n, StringComparer.Ordinal))
                     {
                         if (!scan.publicDeclarers.TryGetValue(tn, out var decls)) continue;
-                        var placed = decls.Select(vis.Place).ToList();
+                        var target = scan.types.TryGetValue(tn, out var kept) ? FinalName(kept) : tn;
+                        var placed = decls.Where(d => FinalName(d) == target).Select(vis.Place).ToList();
                         if (placed.Any(d => d.asm == own)) continue;
                         var seen = placed.Where(sees).Select(d => d.asm).Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList();
                         if (seen.Count > 1)
                             Add(Severity.Error, IssueCode.DuplicateTypeName, f.path,
-                                $"{f.path} uses {tn}, which {string.Join(" and ", seen)} both declare; after Apply its assembly {own} sees both (CS0433). " +
+                                $"{f.path} uses {target}, which {string.Join(" and ", seen)} both declare; after Apply its assembly {own} sees both (CS0433). " +
                                 "Rename one, or keep the declaring files where they are.");
                     }
                 }

@@ -317,7 +317,23 @@ namespace Monome.UtilityPack.ModuleOrganizer
         {
             var s = new Src(NoBom(src ?? ""));
             var attr = s.top.FindIndex(k => k.kind == Kind.Attr);
-            return attr >= 0 && s.top.Skip(attr + 1).Any(k => k.kind == Kind.Using);
+            if (attr < 0) return false;
+            if (s.top.Skip(attr + 1).Any(k => k.kind == Kind.Using)) return true;
+            // The header ended on code inside an open #if: the rest of that group (nested groups, #else branches) may
+            // still hold a using, e.g. `#if A class C {} #else using X; #endif`.
+            var open = s.top.Count > 0 ? s.top[s.top.Count - 1].ifDepth : 0;
+            for (var i = s.top.Count; i < s.lines.Count && open > 0; i++)
+            {
+                var m = s.MaskLine(i).Trim();
+                if (m.StartsWith("#", StringComparison.Ordinal))
+                {
+                    var dir = DirectiveRx.Match(s.Line(i)).Groups[1].Value;
+                    if (dir == "if") open++;
+                    else if (dir == "endif") open--;
+                }
+                else if (UsingRx.IsMatch(m)) return true;
+            }
+            return false;
         }
 
         // Usings Apply adds carry this marker (mark: true), so a later restore can drop the ones the file no longer needs

@@ -157,6 +157,13 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             r = SourceRewriter.SetNamespace("[assembly: Foo]\nnamespace N\n{\n#if UNITY_EDITOR\n    using UnityEditor;\n    class E {}\n#endif\n}\n", "");
             StringAssert.StartsWith("[assembly: Foo]\n#if UNITY_EDITOR\nusing UnityEditor;\n", r);
             Assert.IsTrue(SourceRewriter.UsingBelowGlobalAttribute(r));
+
+            // Code in the first branch, the using in #else (and in a nested group): still found.
+            r = SourceRewriter.SetNamespace("[assembly: Foo]\nnamespace N\n{\n#if A\n    class C {}\n#else\n    using X;\n#endif\n}\n", "");
+            StringAssert.StartsWith("[assembly: Foo]\n#if A\nclass C {}\n#else\nusing X;\n", r);
+            Assert.IsTrue(SourceRewriter.UsingBelowGlobalAttribute(r));
+            Assert.IsTrue(SourceRewriter.UsingBelowGlobalAttribute("[assembly: Foo]\n#if A\nclass C {}\n#if B\nusing X;\n#endif\n#endif\n"));
+            Assert.IsFalse(SourceRewriter.UsingBelowGlobalAttribute("[assembly: Foo]\n#if A\nclass C { void F() { using (var d = G()) {} } }\n#endif\nclass D {}\n"));
         }
 
         [Test]

@@ -578,10 +578,12 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             var pkg = new TypeRecord { fullName = "Json.Node", ns = "Json", assemblyName = "Pkg.Json", kind = AssemblyKind.AsmDef, asmdefGuid = "0123456789abcdef0123456789abcdef" };
             scan.publicDeclarers["Json.Node"] = new List<TypeRecord> { own, pkg };
             Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.DuplicateTypeName), "Assembly-CSharp's own Json.Node wins (CS0436)");
-            Assign("Combat", scan, "n"); // Node leaves Assembly-CSharp for the auto-referenced Game.Combat
+            var combat = Assign("Combat", scan, "n"); // Node leaves Assembly-CSharp for the auto-referenced module asmdef
+            Assert.IsFalse(Validate(scan).issues.Any(x => x.code == IssueCode.DuplicateTypeName), "it becomes Game.Combat.Node: no twin of that name");
+            combat.namespaceName = "Json"; // the module keeps the namespace: still Json.Node, now beside the package's
             var i = Single(Validate(scan), IssueCode.DuplicateTypeName);
             Assert.AreEqual(S + "User.cs", i.path);
-            StringAssert.Contains("Game.Combat and Pkg.Json", i.message);
+            StringAssert.Contains("uses Json.Node, which Json and Pkg.Json both declare", i.message);
         }
 
         [Test]

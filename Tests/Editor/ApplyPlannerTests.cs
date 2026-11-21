@@ -737,6 +737,36 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void MarkedUsing_AnEditorOnlyAliasDoesNotHideAPlayerOnlyUse()
+        {
+            Add(S + "Weapon.cs", "w", "Weapon");
+            Add(S + "Shield.cs", "sh", "Shield");
+            Add(S + "Player.cs", "pl", "Player", "Weapon");
+            disk.sourceByGuid["pl"] = "#if UNITY_EDITOR\nusing Shield = Other.Shield;\n#endif\n\nclass Player\n{\n    Weapon w;\n" +
+                                      "#if UNITY_EDITOR\n    Shield e;\n#else\n    Shield s;\n#endif\n}\n";
+            Assign("Combat", "w", "sh");
+            Assign("Alpha", "pl");
+            Execute(Plan());
+            StringAssert.Contains("using Game.Combat; // monome:using", Source(S + "Alpha/Player.cs"));
+            Unassign("w");
+            Unassign("pl");
+            Assert.IsFalse(Plan().edits.Any(x => x.guid == "pl" && x.removeMarkedUsings.Count > 0), "the #else branch's Shield is Game.Combat.Shield");
+        }
+
+        [Test]
+        public void MarkedUsing_InAFileWithTwoNamespaces_IsRedundantOnlyWhenEveryBlockIsInsideIt()
+        {
+            Add(S + "Token.cs", "tk", "Game.A.Token");
+            Add(S + "Two.cs", "two", "Game.B.User", "Game.A.Token");
+            disk.sourceByGuid["two"] = "using Game.A; // monome:using\n\nnamespace Game.A\n{\n    class Other {}\n}\n\n" +
+                                       "namespace Game.B\n{\n    class User { Token t; }\n}\n";
+            Assert.IsFalse(Plan().edits.Any(x => x.guid == "two" && x.removeMarkedUsings.Count > 0), "Game.B still needs it");
+            disk.sourceByGuid["two"] = "using Game.A; // monome:using\n\nnamespace Game.A\n{\n    class Other {}\n}\n\n" +
+                                       "namespace Game.A.Sub\n{\n    class User { Token t; }\n}\n";
+            CollectionAssert.AreEqual(new[] { "Game.A" }, Plan().edits.Single(x => x.guid == "two").removeMarkedUsings);
+        }
+
+        [Test]
         public void RestoreToGlobal_LeavingAConditionalUsingWithCodeBelowAnAttribute_IsAWarning()
         {
             Add(S + "W.cs", "w", "W");
