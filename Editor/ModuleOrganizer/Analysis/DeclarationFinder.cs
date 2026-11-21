@@ -97,9 +97,12 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return null;
         }
 
-        // Blanks comments, string/char literals, preprocessor lines and inactive #if branches.
+        // Masks source keeping length, offsets and line breaks: comments -> spaces, string/char literals -> '"',
+        // preprocessor lines -> '#' + spaces, inactive #if branches -> spaces.
+        // covered != null (rewriter mode): every #if branch is kept, so conflicting branches surface instead of hiding,
+        // and covered[i] is set for chars inside comments and literals.
         // ponytail: interpolated strings with nested quotes inside holes can confuse it.
-        static string Strip(string s, ICollection<string> defines)
+        internal static string Strip(string s, ICollection<string> defines, bool[] covered = null)
         {
             var defs = new HashSet<string>(defines ?? Array.Empty<string>());
             var conds = new List<(bool parent, bool taken)>();
@@ -113,21 +116,34 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (lineStart && c == '#')
                 {
                     var end = SkipTo(s, i, "\n");
-                    active = Directive(s.Substring(i + 1, end - i - 1), defs, conds, active);
+                    if (covered == null) active = Directive(s.Substring(i + 1, end - i - 1), defs, conds, active);
+                    sb.Append('#').Append(' ', end - i - 1);
                     i = end - 1;
-                    sb.Append(' ');
                     continue;
                 }
                 if (c == '\n') { lineStart = true; sb.Append(c); continue; }
                 if (!char.IsWhiteSpace(c)) lineStart = false;
-                if (!active) continue; // inactive branch: only directive lines matter
-                if (c == '/' && next == '/') { i = SkipTo(s, i, "\n") - 1; sb.Append(' '); continue; }
-                if (c == '/' && next == '*') { i = SkipTo(s, i + 2, "*/"); sb.Append(' '); continue; }
+                if (!active) { sb.Append(char.IsWhiteSpace(c) ? c : ' '); continue; } // inactive branch: only directive lines matter
+                if (c == '/' && next == '/')
+                {
+                    var e = SkipTo(s, i, "\n");
+                    Fill(sb, s, i, e, ' ', covered);
+                    i = e - 1;
+                    continue;
+                }
+                if (c == '/' && next == '*')
+                {
+                    var e = Math.Min(SkipTo(s, i + 2, "*/") + 1, s.Length);
+                    Fill(sb, s, i, e, ' ', covered);
+                    i = e - 1;
+                    continue;
+                }
                 if (c == '"' || c == '\'' || ((c == '@' || c == '$') && (next == '"' || next == '@' || next == '$')))
                 {
+                    var start = i;
                     var verbatim = false;
                     while (i < s.Length && s[i] != '"' && s[i] != '\'') { verbatim |= s[i] == '@'; i++; }
-                    if (i >= s.Length) break;
+                    if (i >= s.Length) { Fill(sb, s, start, s.Length, '"', covered); break; }
                     var q = s[i];
                     for (i++; i < s.Length; i++)
                     {
@@ -139,12 +155,23 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         }
                         if (!verbatim && s[i] == '\n') { i--; break; } // unterminated: keep the newline
                     }
-                    sb.Append(' ');
+                    var stop = Math.Min(i + 1, s.Length);
+                    Fill(sb, s, start, stop, '"', covered);
+                    i = stop - 1;
                     continue;
                 }
                 sb.Append(c);
             }
             return sb.ToString();
+        }
+
+        static void Fill(StringBuilder sb, string s, int from, int to, char fill, bool[] covered)
+        {
+            for (var k = from; k < to; k++)
+            {
+                sb.Append(s[k] == '\n' || s[k] == '\r' ? s[k] : fill);
+                if (covered != null) covered[k] = true;
+            }
         }
 
         // Applies one directive line (text after '#'); returns whether the following code is active.
