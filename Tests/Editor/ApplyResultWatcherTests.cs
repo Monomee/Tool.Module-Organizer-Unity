@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using NUnit.Framework;
 using UnityEngine;
@@ -86,6 +87,47 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.AreEqual(("", "Assembly-CSharp", "Outer/Inner"), keys[1]);
             Assert.AreEqual(0, ApplyResultWatcher.ParseKeys("").Count);
             Assert.AreEqual(0, ApplyResultWatcher.ParseKeys(null).Count);
+        }
+
+        [Test]
+        public void StillOwed_KeepsKeysOfUnreadFiles_AndOfFilesThatFailedToReserialize()
+        {
+            var keys = new[] { "N|A|Payload", "N|A|Other", "N|A|Third" };
+            var settled = new (bool, bool, ICollection<string>)[] { (true, false, new[] { "N|A|Payload" }), (true, false, new string[0]) };
+            CollectionAssert.IsEmpty(ApplyResultWatcher.StillOwed(keys, settled), "read, and re-serialized or holding nothing");
+            var failed = new (bool, bool, ICollection<string>)[] { (true, true, new[] { "N|A|Other" }) };
+            CollectionAssert.AreEqual(new[] { "N|A|Other" }, ApplyResultWatcher.StillOwed(keys, failed), "only what the failed file might hold");
+            var unread = new (bool, bool, ICollection<string>)[] { (true, false, new string[0]), (false, false, new string[0]) };
+            CollectionAssert.AreEqual(keys, ApplyResultWatcher.StillOwed(keys, unread), "an unread file might hold any key");
+        }
+
+        [Test]
+        public void ScanYaml_PrefiltersPerLine_MatchesWrappedBlock_StopsOnceAllMatched()
+        {
+            var keys = new List<(string, string, string)> { ("Game.Old", "Assembly-CSharp", "Payload"), ("", "Assembly-CSharp", "Loose"), ("X", "Y", "Absent") };
+            var (candidates, matched) = ApplyResultWatcher.ScanYaml(new StringReader(Yaml), keys);
+            Assert.IsTrue(matched);
+            CollectionAssert.AreEqual(new[] { 0, 1 }, candidates);
+
+            const string wrapped = "%YAML 1.1\n      type: {class: Payload,\n        ns: Game.Old,\n        asm: Assembly-CSharp}\n";
+            Assert.IsTrue(ApplyResultWatcher.ScanYaml(new StringReader(wrapped), keys.GetRange(0, 1)).matched);
+            var named = ApplyResultWatcher.ScanYaml(new StringReader("m_Name: Payload\n  type: {class: Payload, ns: Game.New, asm: Game.Combat}\n"), keys);
+            Assert.IsFalse(named.matched, "the class name alone is not the old location");
+            CollectionAssert.AreEqual(new[] { 0 }, named.candidates);
+
+            // Stops reading once every key matched: the reader is left unfinished.
+            var reader = new StringReader("type: {class: Payload, ns: Game.Old, asm: Assembly-CSharp}\nA\nB\nC\nD\n");
+            Assert.IsTrue(ApplyResultWatcher.ScanYaml(reader, keys.GetRange(0, 1)).matched);
+            Assert.AreEqual("C", reader.ReadLine());
+        }
+
+        [Test]
+        public void OnlyMovesAsmdefsAndEdits_TriggerACompile()
+        {
+            Assert.IsFalse(new ApplyPlan { deleteFoldersIfEmpty = { "Assets/X" }, removeEntries = { "g" }, clearRetiredAsmdefGuids = { "a" } }.TriggersCompile);
+            Assert.IsTrue(new ApplyPlan { edits = { new TextEditOp { guid = "g" } } }.TriggersCompile);
+            Assert.IsTrue(new ApplyPlan { asmdefs = { new AsmdefOp { delete = true } } }.TriggersCompile);
+            Assert.IsTrue(new ApplyPlan { moves = { new MoveOp() } }.TriggersCompile);
         }
 
         [Test]

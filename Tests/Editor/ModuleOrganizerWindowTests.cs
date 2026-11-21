@@ -43,6 +43,25 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
 
         static string Issues(ModuleOrganizerWindow w) => string.Join("\n", w.rootVisualElement.Q("issues").Query<Label>().ToList().Select(l => l.text));
 
+        [Test]
+        public void ResultTab_WhileWaiting_ShowsTheReloadBudget()
+        {
+            var w = ScriptableObject.CreateInstance<ModuleOrganizerWindow>();
+            try
+            {
+                Call(w, "CreateGUI");
+                ApplyResultWatcher.BeginPending();
+                Call(w, "RefreshResult");
+                var text = string.Join("\n", w.rootVisualElement.Q("result").Query<Label>().ToList().Select(l => l.text));
+                StringAssert.Contains($"domain reload 0 of at most {ApplyResultWatcher.MaxReloads}", text);
+            }
+            finally
+            {
+                ApplyResultWatcher.Cancel();
+                Object.DestroyImmediate(w);
+            }
+        }
+
         // Manual check Step 2 without the mouse: the drops call the same ModuleEdits the window's drop handlers call.
         [Test]
         public void Scenario_IssuesGateApply_UndoRevertsAssign()

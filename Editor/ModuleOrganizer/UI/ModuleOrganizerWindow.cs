@@ -238,13 +238,14 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 RefreshToolbar();
                 return;
             }
-            // Only these make Unity compile; without a compile the watcher would wait for some unrelated later one.
-            var pending = plan.moves.Count + plan.asmdefs.Count + plan.edits.Count > 0;
+            // Without a compile the watcher would wait for some unrelated later one.
+            var pending = plan.TriggersCompile;
             if (pending) ApplyResultWatcher.BeginPending(plan.reserializeTypeKeys);
             result = null;
             applyErrors = ModuleApplier.Execute(plan, cfg, out var touchedDisk);
             // Execute records GUIDs/applied flags outside Undo: undoing past it would desync config and disk.
             Undo.ClearUndo(cfg);
+            if (!pending && plan.reserializeTypeKeys.Count > 0) ApplyResultWatcher.ReserializeOwed(); // no reload will come to do it
             if (applyErrors.Count > 0 && !touchedDisk)
             {
                 if (pending) ApplyResultWatcher.Cancel();
@@ -704,7 +705,9 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 resultView.Add(Line(applyErrors.Count == 0 ? "Apply: files moved and written." : "Apply failed:", "section"));
                 foreach (var e in applyErrors) resultView.Add(Line(e, "sev-Error"));
             }
-            if (ApplyResultWatcher.Pending) resultView.Add(Line("Waiting for the compile result…"));
+            if (ApplyResultWatcher.Pending)
+                resultView.Add(Line($"Waiting for the compile result… (domain reload {ApplyResultWatcher.PendingReloads} of at most " +
+                                    $"{ApplyResultWatcher.MaxReloads}; after that the check gives up with a warning)."));
             if (result != null)
             {
                 // Editor first: playerCompileOk is false whenever the Editor compile failed.

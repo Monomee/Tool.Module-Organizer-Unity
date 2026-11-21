@@ -59,6 +59,10 @@ namespace Monome.UtilityPack.ModuleOrganizer
 
         public bool IsEmpty => createFolders.Count + moves.Count + asmdefs.Count + edits.Count + deleteFoldersIfEmpty.Count +
                                removeEntries.Count + clearRetiredAsmdefGuids.Count == 0;
+
+        // Only these make Unity compile (and reload): the Apply result watcher is announced for them alone. A plan that
+        // just deletes empty folders and drops config entries compiles nothing.
+        public bool TriggersCompile => moves.Count + asmdefs.Count + edits.Count > 0;
     }
 
     public class DiskState

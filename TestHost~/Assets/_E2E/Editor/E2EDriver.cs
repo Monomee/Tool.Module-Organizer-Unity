@@ -212,7 +212,7 @@ public static class E2EDriver
         if (!report.CanApply || plan.issues.Any(i => i.severity == Severity.Error) || plan.IsEmpty)
             throw new Exception($"cannot apply (canApply {report.CanApply}, empty plan {plan.IsEmpty}, cycles {report.cycles.Count})");
         WriteState(next);
-        var pending = plan.moves.Count + plan.asmdefs.Count + plan.edits.Count > 0;
+        var pending = plan.TriggersCompile;
         if (pending) ApplyResultWatcher.BeginPending(plan.reserializeTypeKeys);
         var errors = ModuleApplier.Execute(plan, cfg, out var touched);
         Undo.ClearUndo(cfg);

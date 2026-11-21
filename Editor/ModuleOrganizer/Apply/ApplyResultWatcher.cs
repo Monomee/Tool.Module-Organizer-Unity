@@ -33,7 +33,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         const string ResultKey = "Monome.ModuleOrganizer.Result";
         const string KeysKey = "Monome.ModuleOrganizer.ReserializeKeys";
         const string ReloadsKey = "Monome.ModuleOrganizer.PendingReloads";
-        const int MaxReloads = 3;
+        public const int MaxReloads = 3;
         const string PlayerOutput = "Temp/MonomePlayerCompile";
 
         static readonly List<string> EditorErrors = new List<string>(); // current domain's last compile
@@ -42,6 +42,9 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public static event Action ResultReady;
 
         public static bool Pending => SessionState.GetBool(PendingKey, false);
+
+        // Domain reloads seen while Pending; the check gives up after MaxReloads (the Result tab shows both).
+        public static int PendingReloads => SessionState.GetInt(ReloadsKey, 0);
 
         public static ApplyResult LastResult
         {
@@ -96,8 +99,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
             SessionState.EraseInt(ReloadsKey);
         }
 
-        // ponytail: an Apply that triggers no compile (nothing script-related changed) resolves only at the next reload;
-        // detect "no compile requested" after Refresh if that ever shows up in practice.
+        // Callers announce only plans that make Unity compile (ApplyPlan.TriggersCompile). ponytail: if one still compiles
+        // nothing, Pending resolves at the next reload, or gives up after MaxReloads.
         static void Check()
         {
             if (!Pending) return;
@@ -117,7 +120,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             r.editorCompileOk = true;
             try
             {
-                Guard(() => ReserializeWithOwed(ParseKeys(SessionState.GetString(KeysKey, "")), r), "Re-serializing assets", r);
+                Guard(() => ReserializeWithOwed(SessionState.GetString(KeysKey, "").Split('\n'), r), "Re-serializing assets", r);
                 Guard(() => CompilePlayer(r), "Player script compilation", r);
             }
             finally
@@ -145,14 +148,15 @@ namespace Monome.UtilityPack.ModuleOrganizer
             ResultReady?.Invoke();
         }
 
-        // Owed keys of every ModuleConfig asset plus `keys`; the owed ones are cleared once Reserialize went through.
-        static void ReserializeWithOwed(List<(string ns, string asm, string cls)> keys, ApplyResult r)
+        // Owed keys of every ModuleConfig asset plus `keys`; only the keys Reserialize settled are cleared, so an asset it
+        // could not read or re-serialize keeps blocking Apply until a later reload settles it.
+        static void ReserializeWithOwed(IEnumerable<string> keys, ApplyResult r)
         {
             var configs = AssetDatabase.FindAssets("t:ModuleConfig").Select(AssetDatabase.GUIDToAssetPath)
                 .Select(AssetDatabase.LoadAssetAtPath<ModuleConfig>).Where(c => c != null).ToList();
             var owed = configs.SelectMany(c => c.owedReserializeKeys).Distinct().ToList();
-            Reserialize(ParseKeys(string.Join("\n", owed)).Concat(keys).Distinct().ToList(), r);
-            ClearOwed(configs, owed);
+            var unsettled = new HashSet<string>(Reserialize(owed.Concat(keys).Where(k => !string.IsNullOrEmpty(k)).Distinct().ToList(), r));
+            ClearOwed(configs, owed.Where(k => !unsettled.Contains(k)).ToList());
         }
 
         public static void ClearOwed(IEnumerable<ModuleConfig> configs, ICollection<string> keys)
@@ -165,12 +169,13 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
         }
 
-        // Outside an Apply check (after a reload, on window Scan): only once compiled code is loaded and no Apply is waiting.
+        // Outside an Apply check (after a reload, on window Scan, after an Apply that compiles nothing): only once compiled
+        // code is loaded and no Apply is waiting.
         public static void ReserializeOwed()
         {
             if (Pending || EditorApplication.isCompiling || EditorUtility.scriptCompilationFailed) return;
             var r = new ApplyResult();
-            try { ReserializeWithOwed(new List<(string, string, string)>(), r); }
+            try { ReserializeWithOwed(new List<string>(), r); }
             catch (Exception e)
             {
                 Debug.LogException(e);
@@ -182,31 +187,93 @@ namespace Monome.UtilityPack.ModuleOrganizer
         }
 
         // MovedFrom makes Unity load the old names; re-serializing writes the new ns/asm so the YAML matches before the next move.
-        // Every text-serialized asset under Assets/ (any extension: .prefab, .controller, .playable...), found by its header.
-        static void Reserialize(List<(string ns, string asm, string cls)> keys, ApplyResult r)
+        // Every text-serialized asset under Assets/ (any extension: .prefab, .controller, .playable...), found by its header and
+        // streamed line by line (ScanYaml). Returns the keys still owed (StillOwed).
+        static List<string> Reserialize(List<string> keys, ApplyResult r)
         {
-            if (keys.Count == 0) return;
+            if (keys.Count == 0) return new List<string>();
+            var parsed = keys.Select(k => ParseKeys(k).DefaultIfEmpty((null, null, null)).First()).ToList();
             if (EditorSettings.serializationMode != SerializationMode.ForceText)
                 r.warnings.Add("Project uses binary/mixed asset serialization; binary assets referencing moved [SerializeReference] types were not " +
                                "re-serialized. Switch Project Settings > Editor > Asset Serialization to Force Text, or re-save those assets " +
                                "before moving the types again.");
+            var outcomes = new List<(bool read, bool failed, ICollection<string> candidates)>();
+            var hits = new List<(string path, ICollection<string> candidates)>();
             var head = new byte[5];
             foreach (var p in AssetDatabase.GetAllAssetPaths())
             {
                 if (!p.StartsWith("Assets/", StringComparison.Ordinal) || !File.Exists(p)) continue; // folders
                 try
                 {
-                    using (var s = File.OpenRead(p))
-                        if (s.Read(head, 0, head.Length) < head.Length || !IsYamlHeader(head)) continue;
-                    var text = File.ReadAllText(p);
-                    if (keys.Any(k => text.Contains(k.cls) && ContainsManagedRefType(text, k.ns, k.asm, k.cls))) r.reserialized.Add(p);
+                    using var s = File.OpenRead(p);
+                    if (s.Read(head, 0, head.Length) < head.Length || !IsYamlHeader(head)) continue;
+                    s.Position = 0;
+                    using var reader = new StreamReader(s);
+                    var (candidates, matched) = ScanYaml(reader, parsed);
+                    var named = candidates.Select(i => keys[i]).ToList();
+                    if (matched) hits.Add((p, named));
+                    else outcomes.Add((true, false, named));
                 }
                 catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
                 {
-                    r.warnings.Add($"Could not read {p} to check it for moved [SerializeReference] types: {e.Message}");
+                    outcomes.Add((false, false, keys));
+                    r.warnings.Add($"Could not read {p} to check it for moved [SerializeReference] types ({e.Message}); the asset migration " +
+                                   "stays owed and Apply stays blocked until it can be read.");
                 }
             }
-            if (r.reserialized.Count > 0) AssetDatabase.ForceReserializeAssets(r.reserialized);
+            var failed = false;
+            if (hits.Count > 0)
+                try
+                {
+                    AssetDatabase.ForceReserializeAssets(hits.Select(h => h.path).ToList());
+                    r.reserialized.AddRange(hits.Select(h => h.path));
+                }
+                catch (Exception e)
+                {
+                    failed = true;
+                    r.warnings.Add($"Re-serializing {string.Join(", ", hits.Select(h => h.path))} failed ({e.Message}); the asset migration stays owed.");
+                }
+            outcomes.AddRange(hits.Select(h => (true, failed, h.candidates)));
+            return StillOwed(keys, outcomes);
+        }
+
+        // A key stays owed while some file that might hold it (its class name passed the pre-filter, or the file could not be
+        // read at all) was not read or failed to re-serialize. Every other key is settled.
+        public static List<string> StillOwed(IEnumerable<string> keys, IEnumerable<(bool read, bool failed, ICollection<string> candidates)> files)
+        {
+            var list = files.ToList();
+            return keys.Where(k => list.Any(f => !f.read || (f.failed && f.candidates.Contains(k)))).ToList();
+        }
+
+        // Streams a YAML asset: indexes of keys whose class name appears on some line (candidates), and whether a managed-
+        // reference type block names a key's old location (regex on the candidate line plus the next 2, so a wrapped block
+        // still matches). Stops early once every key has matched.
+        public static (List<int> candidates, bool matched) ScanYaml(TextReader reader, IList<(string ns, string asm, string cls)> keys)
+        {
+            var seen = new HashSet<int>();
+            var matched = new HashSet<int>();
+            var window = new List<string>(3);
+            var eof = false;
+            while (matched.Count < keys.Count)
+            {
+                while (!eof && window.Count < 3)
+                {
+                    var line = reader.ReadLine();
+                    if (line == null) eof = true;
+                    else window.Add(line);
+                }
+                if (window.Count == 0) break;
+                string joined = null;
+                for (var k = 0; k < keys.Count; k++)
+                {
+                    if (matched.Contains(k) || string.IsNullOrEmpty(keys[k].cls) || !window[0].Contains(keys[k].cls)) continue;
+                    seen.Add(k);
+                    joined ??= string.Join("\n", window);
+                    if (ContainsManagedRefType(joined, keys[k].ns, keys[k].asm, keys[k].cls)) matched.Add(k);
+                }
+                window.RemoveAt(0);
+            }
+            return (seen.OrderBy(i => i).ToList(), matched.Count > 0);
         }
 
         // Unity text-serialized assets start with "%YAML".
