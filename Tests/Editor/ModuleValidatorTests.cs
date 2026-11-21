@@ -334,6 +334,7 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
                 F(S + "Foo.cs", "f", AssemblyKind.Runtime, "Game.Stuff.Foo"),
                 F(S + "UI/User.cs", "u", AssemblyKind.Runtime, "Game.UI.User", "Game.Weapon", "Lib.Foo"));
             scan.types["Lib.Foo"] = new TypeRecord { fullName = "Lib.Foo", ns = "Lib", kind = AssemblyKind.AsmDef, asmdefGuid = "lib" };
+            sources[S + "UI/User.cs"] = "using Lib;\nnamespace Game.UI\n{\n    class User\n    {\n        Foo f;\n        Weapon w;\n    }\n}\n";
             Assign("Combat", scan, "w");
             Assert.IsTrue(Validate(scan).CanApply); // Foo stays in Game.Stuff: `using Game.Combat;` adds no second Foo
 
@@ -342,6 +343,40 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             var i = Single(r, IssueCode.NameClash);
             Assert.AreEqual(S + "UI/User.cs", i.path);
             StringAssert.Contains("Game.Combat", i.message);
+            Assert.IsFalse(r.CanApply);
+        }
+
+        [TestCase("namespace Game.UI { class User { Weapon w; } }")] // System.Object only implicit (base type)
+        [TestCase("namespace Game.UI { class User { System.Object o; Weapon w; } }")]
+        [TestCase("namespace Game.UI { class User { global::System.Object o; Weapon w; } }")]
+        [TestCase("using Object = UnityEngine.Object;\nnamespace Game.UI { class User { Object o; Weapon w; } }")]
+        [TestCase("namespace Game.UI { class User { Weapon w; /* Object */ string s = \"Object\"; } }")]
+        public void AddedUsing_NameNotWrittenUnqualified_IsNotNameClash(string source)
+        {
+            var scan = Scan(F(S + "Weapon.cs", "w", AssemblyKind.Runtime, "Game.Weapon"),
+                F(S + "Object.cs", "o", AssemblyKind.Runtime, "Game.Stuff.Object"),
+                F(S + "UI/User.cs", "u", AssemblyKind.Runtime, "Game.UI.User", "Game.Weapon", "System.Object", "UnityEngine.Object"));
+            scan.types["System.Object"] = new TypeRecord { fullName = "System.Object", ns = "System", kind = AssemblyKind.Engine };
+            scan.types["UnityEngine.Object"] = new TypeRecord { fullName = "UnityEngine.Object", ns = "UnityEngine", kind = AssemblyKind.Engine };
+            sources[S + "UI/User.cs"] = source;
+            Assign("Combat", scan, "w", "o");
+            var r = Validate(scan);
+            Assert.IsTrue(r.CanApply, string.Join("\n", r.issues));
+        }
+
+        [Test]
+        public void AddedUsing_AmbiguousOuterOfNestedExternalType_IsNameClash()
+        {
+            var scan = Scan(F(S + "Weapon.cs", "w", AssemblyKind.Runtime, "Game.Weapon"),
+                F(S + "Environment.cs", "e", AssemblyKind.Runtime, "Game.Stuff.Environment"),
+                F(S + "UI/User.cs", "u", AssemblyKind.Runtime, "Game.UI.User", "Game.Weapon", "System.Environment/SpecialFolder"));
+            scan.types["System.Environment/SpecialFolder"] = new TypeRecord { fullName = "System.Environment/SpecialFolder", ns = "System", kind = AssemblyKind.Engine };
+            sources[S + "UI/User.cs"] = "using System;\nnamespace Game.UI { class User { Environment.SpecialFolder f; Weapon w; } }";
+            Assign("Combat", scan, "w", "e");
+            var r = Validate(scan);
+            var i = Single(r, IssueCode.NameClash);
+            Assert.AreEqual(S + "UI/User.cs", i.path);
+            StringAssert.Contains("System.Environment", i.message);
             Assert.IsFalse(r.CanApply);
         }
 

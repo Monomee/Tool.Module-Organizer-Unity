@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace Monome.UtilityPack.ModuleOrganizer
 {
@@ -158,12 +159,14 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 // A `using` Apply adds must not make a name F already resolves elsewhere ambiguous (CS0104).
                 var enclosing = new HashSet<string>((Changes(f, out _, out var ownNs) ? new List<string> { ownNs } : Info(f).namespaces)
                     .SelectMany(Prefixes)) { "" };
-                var refs = f.referencedTypes.Select(Outer).Distinct().Where(finals.ContainsKey).OrderBy(n => n, StringComparer.Ordinal).ToList();
+                // Nested refs count as their outer type, even when Cecil registered no record for it (System.Environment/SpecialFolder).
+                var refs = f.referencedTypes.Where(scan.types.ContainsKey).Select(Outer).Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList();
                 var added = new HashSet<string>(refs.Where(moved.ContainsKey).Select(n => moved[n].newNs).Where(n => !enclosing.Contains(n)));
+                var unqualified = added.Count == 0 ? null : UnqualifiedNames(Source(f));
                 foreach (var rn in added.Count == 0 ? new List<string>() : refs)
                 {
-                    var rNs = finals[rn].ns;
-                    if (enclosing.Contains(rNs)) continue;
+                    var rNs = finals.TryGetValue(rn, out var fr) ? fr.ns : NsOf(rn);
+                    if (enclosing.Contains(rNs) || !unqualified.Contains(StripArity(SimpleName(rn)))) continue;
                     var other = bySimpleName[SimpleName(rn)].FirstOrDefault(x => x.ns != rNs && added.Contains(x.ns));
                     if (other == null) continue;
                     Add(Severity.Error, IssueCode.NameClash, f.path,
@@ -272,6 +275,20 @@ namespace Monome.UtilityPack.ModuleOrganizer
         }
 
         static string Outer(string typeName) => typeName.Split('/')[0];
+
+        static string NsOf(string fullName) => fullName.Contains('.') ? fullName.Substring(0, fullName.LastIndexOf('.')) : "";
+
+        static readonly Regex IdentRx = new Regex(@"(?<![\w@])(?<!(?:\.|::)\s*)@?([\p{L}_]\w*)", RegexOptions.Compiled);
+        static readonly Regex AliasRx = new Regex(@"(?<![\w@.])using\s+@?([\p{L}_]\w*)\s*=", RegexOptions.Compiled);
+
+        // Identifiers the code writes unqualified (not right after `.` or `::`), minus using aliases, which bind before
+        // imported namespaces. Comments, literals and preprocessor lines are masked; every #if branch is kept.
+        static HashSet<string> UnqualifiedNames(string src)
+        {
+            var mask = DeclarationFinder.Strip(src, null, new bool[src.Length]);
+            var aliases = new HashSet<string>(AliasRx.Matches(mask).Cast<Match>().Select(m => m.Groups[1].Value));
+            return new HashSet<string>(IdentRx.Matches(mask).Cast<Match>().Select(m => m.Groups[1].Value).Where(n => !aliases.Contains(n)));
+        }
 
         static string SimpleName(string fullName) => fullName.Substring(fullName.LastIndexOf('.') + 1); // keeps `1: Box`1 != Box
 
