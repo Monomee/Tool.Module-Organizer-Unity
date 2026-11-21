@@ -210,7 +210,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
             if (op.aliases.Count > 0) text = SourceRewriter.AddNamespaceAliases(text, op.aliases);
             foreach (var u in op.removeUsings) text = SourceRewriter.RemoveUsing(text, u);
-            foreach (var u in op.addUsings) text = SourceRewriter.AddUsing(text, u);
+            foreach (var u in op.addUsings) text = SourceRewriter.AddUsing(text, u, mark: true);
             foreach (var (type, oldNs, oldAsm) in op.movedFrom)
                 if (!SourceRewriter.TryAddMovedFrom(text, type, oldNs, oldAsm, out text))
                     errors.Add($"MovedFrom target not found: {type} in {path}");

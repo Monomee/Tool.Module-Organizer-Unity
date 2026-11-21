@@ -159,7 +159,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
 
         // Usings Apply adds to and removes from f (sorted). Added: new namespaces of moved types f uses, and, when f's own
         // namespace changes, namespaces of unmoved types f used to see through its old enclosing namespaces. Removed:
-        // f's `using`s of namespaces that disappear.
+        // f's `using`s of namespaces that disappear, and the usings Apply once added (marked) that f no longer needs: no type
+        // f references ends up in that namespace (a restored file drops the using it got when it moved into a module).
         public (List<string> add, List<string> remove) Usings(ScriptFile f)
         {
             var enclosing = Enclosing(f);
@@ -172,7 +173,10 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (m.TryGetValue(ModuleValidator.Outer(tn), out var mv)) add.Add(mv.newNs);
                 else if (oldEnclosing.Contains(t.ns ?? "")) add.Add(t.ns);
             }
-            var remove = FileUsings(f).Where(GoneNamespaces().Contains).Where(n => !enclosing.Contains(n));
+            var needed = new HashSet<string>(f.referencedTypes.Select(ModuleValidator.Outer).Select(o =>
+                m.TryGetValue(o, out var mv) ? mv.newNs : scan.types.TryGetValue(o, out var t) ? t.ns ?? "" : ModuleValidator.NsOf(o)));
+            var remove = FileUsings(f).Where(GoneNamespaces().Contains)
+                .Concat(SourceRewriter.MarkedUsings(source(f)).Where(n => !needed.Contains(n))).Distinct().Where(n => !enclosing.Contains(n));
             return (add.Where(n => !enclosing.Contains(n)).OrderBy(n => n, StringComparer.Ordinal).ToList(),
                 remove.OrderBy(n => n, StringComparer.Ordinal).ToList());
         }

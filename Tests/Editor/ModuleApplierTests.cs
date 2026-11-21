@@ -170,7 +170,7 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             CollectionAssert.AreEqual(new byte[] { 0xEF, 0xBB, 0xBF }, bytes.Take(3));
             var text = Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);
             Assert.AreEqual(
-                "using System;\r\n\r\nnamespace New\r\n{\r\n" +
+                "using System; // monome:using\r\n\r\nnamespace New\r\n{\r\n" +
                 "    [UnityEngine.Scripting.APIUpdating.MovedFrom(false, sourceNamespace: \"Old\", sourceAssembly: \"Assembly-CSharp\")]\r\n" +
                 "    public class A {}\r\n}\r\n", text);
         }

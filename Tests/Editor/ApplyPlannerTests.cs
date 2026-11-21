@@ -664,6 +664,44 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void NameUsedOnlyAsANamespaceQualifier_GetsNoShadowAlias()
+        {
+            // In Game.Combat.Editor, `Editor.Util.Helper` names the namespace Game.Combat.Editor.Util: an alias Editor =
+            // UnityEditor.Editor would break it. The file reaches UnityEditor.Editor only fully qualified.
+            Add(S + "Weapon.cs", "w", "Weapon");
+            Add(S + "Editor/Util/Helper.cs", "hp", true, "Helper");
+            Add(S + "Editor/Tool.cs", "t", true, "Tool", "Helper", "UnityEditor.Editor");
+            disk.sourceByGuid["t"] = "public class Tool : UnityEditor.Editor\n{\n    Editor.Util.Helper h;\n}\n";
+            Add(S + "Editor/Typed.cs", "ty", true, "Typed", "UnityEditor.Editor");
+            disk.sourceByGuid["ty"] = "using UnityEditor;\n\npublic class Typed\n{\n    Editor.Util.Helper h;\n    Editor e;\n}\n";
+            Assign("Combat", "w", "hp", "t", "ty");
+            var p = Plan();
+            Assert.IsEmpty(p.edits.Single(x => x.guid == "t").aliases);
+            CollectionAssert.AreEqual(new[] { ("Editor", "global::UnityEditor.Editor") }, p.edits.Single(x => x.guid == "ty").aliases);
+        }
+
+        [Test]
+        public void RestoredFile_DropsTheMarkedUsingApplyAdded_OnceItsTypeLeavesThatNamespace()
+        {
+            Add(S + "Weapon.cs", "w", "Weapon");
+            Add(S + "Shield.cs", "sh", "Shield");
+            Add(S + "Player.cs", "pl", "Player", "Weapon");
+            Assign("Combat", "w", "sh");
+            Assign("Alpha", "pl");
+            Execute(Plan());
+            StringAssert.Contains("using Game.Combat; // monome:using\n", Source(S + "Alpha/Player.cs"));
+            CollectionAssert.AreEqual(new[] { "Game.Combat" }, SourceRewriter.MarkedUsings(Source(S + "Alpha/Player.cs")));
+            Assert.IsEmpty(Plan().edits);
+
+            Unassign("w");
+            Unassign("pl");
+            var p = Plan();
+            CollectionAssert.AreEqual(new[] { "Game.Combat" }, p.edits.Single(x => x.guid == "pl").removeUsings, "Game.Combat stays (Shield)");
+            Execute(p);
+            StringAssert.DoesNotContain("using", Source(S + "Player.cs"));
+        }
+
+        [Test]
         public void MarkedAlias_FollowsItsTargetWhenTheModuleIsRenamed()
         {
             // User sits in Game.Alpha, whose child namespace Game.Alpha.Tools (Hammer) shadows the type Tools from Beta.

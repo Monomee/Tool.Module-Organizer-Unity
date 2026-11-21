@@ -254,8 +254,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
             // UnityEditor.Editor (CS0118). For each name f writes unqualified whose referenced type a namespace visible to f's
             // assembly shadows after Apply: (alias, global:: full name), for a marked alias inside the namespace block.
             // src is f's source without its marked aliases; its own aliases inside the block protect their names. Sorted.
-            // ponytail: an unqualified name used as a namespace qualifier (`Editor.Util` for a namespace) next to a reference
-            // to a type of that name gets an alias it does not want; a shadowed name used both ways cannot be fixed by text.
+            // A name only written as a namespace qualifier (`Editor.Util.X` where some visible namespace ends in Editor.Util)
+            // is not a use of the type and gets no alias. ponytail: a shadowed name used both ways cannot be fixed by text.
             List<(string, string)> ShadowAliases(ScriptFile f, string src)
             {
                 var result = new List<(string, string)>();
@@ -267,16 +267,30 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 var names = ModuleValidator.UnqualifiedNames(src, false);
                 names.ExceptWith(SourceRewriter.BlockAliasNames(src));
                 var refs = f.referencedTypes.Select(ModuleValidator.Outer).Distinct().Where(r => !r.Contains('`'))
-                    .Select(r => (simple: ModuleValidator.SimpleName(r),
+                    .Select(r => (full: r, simple: ModuleValidator.SimpleName(r),
                         ns: moved.TryGetValue(r, out var mv) ? mv.newNs : scan.types.TryGetValue(r, out var t) ? t.ns ?? "" : ModuleValidator.NsOf(r)))
                     .Where(r => names.Contains(r.simple));
                 foreach (var g in refs.GroupBy(r => r.simple).Where(g => g.Count() == 1))
                 {
                     var r = g.Single();
-                    if (Shadowed(final, r.ns, r.simple, namespaces))
+                    if (Shadowed(final, r.ns, r.simple, namespaces) && UsedAsType(src, r.simple, r.full, namespaces))
                         result.Add((r.simple, "global::" + (r.ns.Length == 0 ? "" : r.ns + ".") + r.simple));
                 }
                 return result.OrderBy(x => x.Item1, StringComparer.Ordinal).ToList();
+            }
+
+            // Some unqualified occurrence of name is not a namespace qualifier: not followed by `.Seg` where name.Seg ends a
+            // visible namespace, unless full/Seg is a nested type.
+            bool UsedAsType(string src, string name, string full, HashSet<string> namespaces)
+            {
+                var mask = DeclarationFinder.Strip(src, null, new bool[src.Length]);
+                var rx = new Regex(@"(?<![\w@])(?<!(?:\.|::)\s*)@?" + Regex.Escape(name) + @"(?!\w)(?:\s*\.\s*@?([\p{L}_]\w*))?");
+                return rx.Matches(mask).Cast<Match>().Any(m =>
+                {
+                    if (!m.Groups[1].Success || scan.types.ContainsKey(full + "/" + m.Groups[1].Value)) return true;
+                    var path = name + "." + m.Groups[1].Value;
+                    return !namespaces.Any(n => n == path || n.EndsWith("." + path, StringComparison.Ordinal));
+                });
             }
 
             string CurrentPath(string guid) => disk.pathByGuid.TryGetValue(guid, out var p) ? p : null;

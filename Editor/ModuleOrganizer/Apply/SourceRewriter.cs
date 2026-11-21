@@ -237,12 +237,27 @@ namespace Monome.UtilityPack.ModuleOrganizer
             if (Ws(b, NextLine(b))) b = NextLine(b);
             if (Ws(LineStart(c), c) && Ws(d, NextLine(d))) { c = LineStart(c); d = NextLine(d); }
 
+            // One indent level = the leading blanks of the block's first non-blank line (2 spaces, a tab...); none = no dedent.
+            bool RealStart(int p) => p > 0 && t[p - 1] == '\n' && !s.cov[p - 1];
+            bool At(int p, string x) => p + x.Length <= c && string.CompareOrdinal(t, p, x, 0, x.Length) == 0;
+            var unit = "";
+            for (var p = b; p < c; p = NextLine(p))
+            {
+                if (!RealStart(p)) continue;
+                var e = p;
+                while (e < c && (t[e] == ' ' || t[e] == '\t')) e++;
+                if (e >= c || t[e] == '\r' || t[e] == '\n') continue;
+                unit = t.Substring(p, e - p);
+                break;
+            }
+
             var sb = new StringBuilder(t, 0, a, t.Length);
             for (var p = b; p < c;)
             {
-                if (t[p - 1] == '\n' && !s.cov[p - 1]) // a real line start: dedent one level where present
+                if (unit.Length > 0 && RealStart(p)) // a real line start: dedent one level where present
                 {
-                    if (p + Indent.Length <= c && string.CompareOrdinal(t, p, Indent, 0, Indent.Length) == 0) p += Indent.Length;
+                    if (At(p, unit)) p += unit.Length;
+                    else if (At(p, Indent)) p += Indent.Length;
                     else if (t[p] == '\t') p++;
                 }
                 var n = p < c ? t.IndexOf('\n', p, c - p) : -1;
@@ -252,10 +267,52 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
             var r = sb.Append(t, d, t.Length - d).ToString();
             if (!EndsWithNewline(t) && r.EndsWith("\n")) r = r.Substring(0, r.Length - (r.EndsWith("\r\n") ? 2 : 1));
-            return r;
+            return HoistUsings(r);
         }
 
-        public static string AddUsing(string src, string ns) => KeepBom(src, body =>
+        // Unwrapped, a block's own usings can land below a global attribute that stayed above the namespace ([assembly: X]
+        // before `namespace N { using Y; ...`): CS1529. Moves those using lines (outside #if/#region) above the first global
+        // attribute line, or above the #if/#region holding it. ponytail: a using under #if after the attribute stays put.
+        static string HoistUsings(string text)
+        {
+            var s = new Src(text);
+            var attr = s.top.FindIndex(k => k.kind == Kind.Attr);
+            if (attr < 0) return text;
+            var move = new HashSet<int>(Enumerable.Range(attr + 1, s.top.Count - attr - 1)
+                .Where(i => s.top[i].kind == Kind.Using && s.Boundary(i) && !s.StartsInSpan(i)));
+            if (move.Count == 0) return text;
+            var at = attr;
+            while (at > 0 && s.top[at - 1].depth > 0) at--;
+            string Full(int i) => text.Substring(s.lines[i].start, s.lines[i].next - s.lines[i].start);
+            bool Blank(int i) => i >= 0 && i < s.lines.Count && s.Line(i).Trim().Length == 0;
+            var sb = new StringBuilder(text.Length + 2);
+            for (var i = 0; i < s.lines.Count; i++)
+            {
+                if (i == at)
+                    foreach (var u in move.OrderBy(x => x))
+                        sb.Append(Full(u)).Append(s.lines[u].next > s.lines[u].end ? "" : s.nl);
+                if (move.Contains(i)) continue;
+                if (Blank(i) && move.Contains(i - 1) && Blank(i - 2)) continue; // no double blank where a using left
+                sb.Append(Full(i));
+            }
+            return sb.ToString();
+        }
+
+        // Usings Apply adds carry this marker (mark: true), so a later restore can drop the ones the file no longer needs
+        // without touching the user's own.
+        public const string UsingMarker = "// monome:using";
+        static readonly Regex MarkedUsingRx = new Regex(@"^[ \t]*using\s+(@?\w+(?:\s*\.\s*@?\w+)*)\s*;[ \t]*// monome:using[ \t]*\r?$",
+            RegexOptions.Compiled | RegexOptions.Multiline);
+
+        // Namespaces of the tool's marked `using Ns; // monome:using` lines.
+        public static List<string> MarkedUsings(string src)
+        {
+            var s = new Src(NoBom(src ?? ""));
+            return MarkedUsingRx.Matches(s.text).Cast<Match>().Where(m => IsCode(s, m))
+                .Select(m => Regex.Replace(m.Groups[1].Value, @"[@\s]", "")).Distinct().ToList();
+        }
+
+        public static string AddUsing(string src, string ns, bool mark = false) => KeepBom(src, body =>
         {
             var s = new Src(body);
             var rx = UsingOf(ns);
@@ -285,7 +342,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     for (j = anchor - 1; j >= 0 && !s.Boundary(j); j--) { }
                 at = s.After(j);
             }
-            var text = "using " + ns + ";" + s.nl;
+            var text = "using " + ns + ";" + (mark ? " " + UsingMarker : "") + s.nl;
             if (!hasUsing && !NextLineBlank(body, at)) text += s.nl;
             return body.Insert(at, text);
         });
@@ -394,10 +451,24 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (rx.Replace(line, "").Trim().Length == 0 && clean && !s.StartsInSpan(i))
                     sb.Remove(l.start, l.next - l.start);
                 else
-                    for (var k = hits.Count - 1; k >= 0; k--) sb.Remove(l.start + hits[k].Index, hits[k].Length);
+                    for (var k = hits.Count - 1; k >= 0; k--) RemoveInline(sb, l.start + hits[k].Index, hits[k].Length, l.start);
             }
             return sb.ToString();
         });
+
+        // Removes [at, at + len) from a line that keeps other code, leaving exactly one separator: the blanks after it go
+        // too, except one when it sat glued to the code before it; at the end of the line the blanks before it go as well.
+        static void RemoveInline(StringBuilder sb, int at, int len, int lineStart)
+        {
+            bool Blank(int i) => sb[i] == ' ' || sb[i] == '\t';
+            var end = at + len;
+            while (end < sb.Length && Blank(end)) end++;
+            var start = at;
+            if (end >= sb.Length || sb[end] == '\r' || sb[end] == '\n')
+                while (start > lineStart && Blank(start - 1)) start--;
+            else if (start > lineStart && !Blank(start - 1) && end > at + len) end--;
+            sb.Remove(start, end - start);
+        }
 
         // `using Ns;` exactly: not `using static Ns;`, `using A = Ns;` or `using Ns.Sub;`.
         static Regex UsingOf(string ns) => new Regex(@"(?<![\w.@])using\s+" + NsPattern(ns) + @"\s*;");

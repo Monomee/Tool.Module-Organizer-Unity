@@ -107,9 +107,46 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         public void RemoveUsing_KeepsStaticAlias_RemovesNamespaceLevel()
         {
             var src = "using static Game.Combat;\nusing C = Game.Combat;\nusing Game.Combat; // gone\nnamespace N\n{\n    using Game.Combat;\n    using Game . Combat ; using X;\n    class Y {}\n}\n";
-            Assert.AreEqual("using static Game.Combat;\nusing C = Game.Combat;\nnamespace N\n{\n     using X;\n    class Y {}\n}\n",
+            Assert.AreEqual("using static Game.Combat;\nusing C = Game.Combat;\nnamespace N\n{\n    using X;\n    class Y {}\n}\n",
                 SourceRewriter.RemoveUsing(src, "Game.Combat"));
-            Assert.AreEqual("using A; \nclass X {}\n", SourceRewriter.RemoveUsing("using A; using G;\nclass X {}\n", "G"));
+            Assert.AreEqual("using A;\nclass X {}\n", SourceRewriter.RemoveUsing("using A; using G;\nclass X {}\n", "G"));
+        }
+
+        [Test]
+        public void RemoveUsing_SharingALineWithCode_LeavesExactlyOneSeparator()
+        {
+            Assert.AreEqual("namespace N\n{\n    class Y {}\n}\n", SourceRewriter.RemoveUsing("namespace N\n{\n    using G;   class Y {}\n}\n", "G"));
+            Assert.AreEqual("namespace N { class Y {} }\n", SourceRewriter.RemoveUsing("namespace N {using G;  class Y {} }\n", "G"));
+            Assert.AreEqual("namespace N { class Y {} }\n", SourceRewriter.RemoveUsing("namespace N { using G; class Y {} }\n", "G"));
+            Assert.AreEqual("using A;\r\nclass X {}\r\n", SourceRewriter.RemoveUsing("using A;\tusing G; \r\nclass X {}\r\n", "G"));
+        }
+
+        [Test]
+        public void AddUsing_Marked_IsFoundByMarkedUsings_AndRemovedWithItsMarker()
+        {
+            var src = SourceRewriter.AddUsing("using A;\nclass X {}\n", "Game.Combat", mark: true);
+            Assert.AreEqual("using A;\nusing Game.Combat; // monome:using\nclass X {}\n", src);
+            CollectionAssert.AreEqual(new[] { "Game.Combat" }, SourceRewriter.MarkedUsings(src + "// using B; // monome:using\n"));
+            Assert.AreEqual("using A;\nclass X {}\n", SourceRewriter.RemoveUsing(src, "Game.Combat"));
+            CollectionAssert.IsEmpty(SourceRewriter.MarkedUsings("using A;\nclass X {}\n"));
+        }
+
+        [Test]
+        public void Unwrap_TwoSpaceIndent_DedentsOneLevelEverywhere()
+        {
+            Assert.AreEqual("class A\n{\n  int x;\n  void F()\n  {\n  }\n}\n",
+                SourceRewriter.SetNamespace("namespace N\n{\n  class A\n  {\n    int x;\n    void F()\n    {\n    }\n  }\n}\n", ""));
+            Assert.AreEqual("class A {}\n  // not indented content stays as it is\n",
+                SourceRewriter.SetNamespace("namespace N\n{\nclass A {}\n  // not indented content stays as it is\n}\n", ""));
+        }
+
+        [Test]
+        public void Unwrap_BlockUsingBelowAnAssemblyAttribute_MovesAboveIt()
+        {
+            Assert.AreEqual("using X;\nusing Y;\n[assembly: Foo]\n\nclass C {}\n",
+                SourceRewriter.SetNamespace("using X;\n[assembly: Foo]\n\nnamespace N\n{\n    using Y;\n\n    class C {}\n}\n", ""));
+            Assert.AreEqual("using Y;\n#if A\n[assembly: Foo]\n#endif\nclass C {}\n",
+                SourceRewriter.SetNamespace("#if A\n[assembly: Foo]\n#endif\nnamespace N\n{\n    using Y;\n    class C {}\n}\n", ""));
         }
 
         [Test]
