@@ -20,6 +20,21 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             "      type: {class: Loose, ns: , asm: Assembly-CSharp}\n";
 
         [Test]
+        public void Cancel_ClearsPending()
+        {
+            try
+            {
+                ApplyResultWatcher.BeginPending(new[] { "Game.Old|Assembly-CSharp|Payload" });
+                Assert.IsTrue(ApplyResultWatcher.Pending);
+            }
+            finally
+            {
+                ApplyResultWatcher.Cancel();
+            }
+            Assert.IsFalse(ApplyResultWatcher.Pending);
+        }
+
+        [Test]
         public void ContainsManagedRefType_MatchesOldLocation()
         {
             Assert.IsTrue(ApplyResultWatcher.ContainsManagedRefType(Yaml, "Game.Old", "Assembly-CSharp", "Payload"));

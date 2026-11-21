@@ -115,6 +115,30 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void Unassign_DraftWithRewrittenNamespace_InOriginalFolder_GoesToPendingRemovals()
+        {
+            // Already inside Alpha's folder, so Apply only rewrote its namespace; then moved to Beta and unassigned.
+            File("g1", "Assets/_Scripts/Alpha/Gun.cs", "namespace Game.Alpha { class Gun {} }");
+            alpha.scripts.Add(new ScriptEntry
+                { guid = "g1", originalPath = "Assets/_Scripts/Alpha/Gun.cs", originalNamespace = "Old", relativeDir = "", applied = true });
+            Assign(beta, "g1");
+            Assert.That(beta.scripts.Single().applied, Is.False);
+
+            ModuleEdits.Unassign(cfg, new[] { "g1" }, scan, p => sources[p]);
+            var e = cfg.pendingRemovals.Single();
+            Assert.That((e.guid, e.originalPath, e.originalNamespace), Is.EqualTo(("g1", "Assets/_Scripts/Alpha/Gun.cs", "Old")));
+        }
+
+        [Test]
+        public void Unassign_DraftUnchangedFromOrigin_IsDroppedEvenWithScan()
+        {
+            File("g1", "Assets/_Scripts/Gun.cs", "namespace Old { class Gun {} }");
+            Assign(alpha, "g1");
+            ModuleEdits.Unassign(cfg, new[] { "g1" }, scan, p => sources[p]);
+            Assert.That(cfg.pendingRemovals, Is.Empty);
+        }
+
+        [Test]
         public void DeleteModule_AppliedToPending_DraftsDropped_AsmdefsRetired()
         {
             alpha.asmdefGuid = "a1";

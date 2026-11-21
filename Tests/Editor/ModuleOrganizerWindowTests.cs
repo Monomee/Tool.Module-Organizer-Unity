@@ -76,6 +76,13 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
                 Call(w, "Validate");
                 Assert.That(apply.enabledSelf, Is.True, Issues(w));
 
+                // First click only arms (Plan tab shown); any re-validate (edit, rescan, undo) disarms.
+                Call(w, "Apply");
+                StringAssert.StartsWith("Confirm Apply (", ((Button)apply).text);
+                Assert.That(w.rootVisualElement.Q<TabView>("tabs").activeTab.name, Is.EqualTo("tab-plan"));
+                Call(w, "Validate");
+                Assert.That(((Button)apply).text, Is.EqualTo("Apply"));
+
                 Undo.PerformUndo();
                 Assert.That(cfg.modules[0].scripts.Select(e => e.guid), Is.EqualTo(new[] { Guid("Scope/FxA.cs") }));
                 Assert.That(apply.enabledSelf, Is.False, "undo re-validates");

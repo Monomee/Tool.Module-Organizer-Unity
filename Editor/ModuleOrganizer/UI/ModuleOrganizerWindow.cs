@@ -31,6 +31,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         readonly Dictionary<string, (Severity sev, string tip)> worst = new Dictionary<string, (Severity, string)>();
         List<ModuleConfig> configs = new List<ModuleConfig>();
         int nextId;
+        bool armed; // Apply clicked once: the next click executes
 
         DropdownField picker;
         ToolbarButton createBtn, scanBtn, validateBtn, applyBtn, syncBtn;
@@ -173,6 +174,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         // Report, plan and drift together: Diff needs a fresh report, and the Plan tab shows what Apply would do.
         void Validate()
         {
+            armed = false;
             report = null;
             plan = null;
             drift = new List<DriftItem>();
@@ -211,20 +213,43 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return null;
         }
 
+        // Two clicks: the first shows the Plan tab and arms the button; the second (git warning if needed) executes.
+        // Any config edit or rescan goes through Validate/Edit, which disarm it.
         void Apply()
         {
-            Validate();
+            if (!armed)
+            {
+                Validate();
+                if (ApplyBlocker() != null) return;
+                armed = true;
+                tabs.activeTab = planTab;
+                RefreshToolbar();
+                return;
+            }
+            armed = false;
             if (ApplyBlocker() != null) return;
-            tabs.activeTab = planTab;
-            var dirty = ModuleApplier.HasUncommittedGitChanges(Directory.GetParent(Application.dataPath).FullName);
-            var msg = $"Apply {plan.moves.Count} move(s), {plan.asmdefs.Count} asmdef change(s) and {plan.edits.Count} source edit(s)? " +
-                      "The Plan tab lists them." +
-                      (dirty ? "\n\nWarning: the project has uncommitted git changes. Commit first so Apply can be reverted." : "");
-            if (!EditorUtility.DisplayDialog("Module Organizer", msg, "Apply", "Cancel")) return;
+            if (ModuleApplier.HasUncommittedGitChanges(Directory.GetParent(Application.dataPath).FullName) &&
+                !EditorUtility.DisplayDialog("Module Organizer",
+                    "The project has uncommitted git changes. Apply moves and rewrites scripts; commit first so it can be reverted.\n\nApply anyway?",
+                    "Apply", "Cancel"))
+            {
+                RefreshToolbar();
+                return;
+            }
             // Only these make Unity compile; without a compile the watcher would wait for some unrelated later one.
-            if (plan.moves.Count + plan.asmdefs.Count + plan.edits.Count > 0) ApplyResultWatcher.BeginPending(plan.reserializeTypeKeys);
+            var pending = plan.moves.Count + plan.asmdefs.Count + plan.edits.Count > 0;
+            if (pending) ApplyResultWatcher.BeginPending(plan.reserializeTypeKeys);
             result = null;
-            applyErrors = ModuleApplier.Execute(plan, cfg);
+            applyErrors = ModuleApplier.Execute(plan, cfg, out var touchedDisk);
+            // Execute records GUIDs/applied flags outside Undo: undoing past it would desync config and disk.
+            Undo.ClearUndo(cfg);
+            if (applyErrors.Count > 0 && !touchedDisk)
+            {
+                if (pending) ApplyResultWatcher.Cancel();
+                Validate(); // nothing changed: the scan still holds
+                tabs.activeTab = resultTab;
+                return;
+            }
             // The scan describes the old assemblies; the window rescans after the reload (or press Scan).
             scan = null;
             report = null;
@@ -312,10 +337,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 var n = tree.GetItemDataForIndex<Node>(i);
                 BindRow(e, n.label, n.isFile ? n.path : null, n.editor, n.pending);
             };
+            tree.reorderable = true; // makes the dragger start drags; handleDrop below takes every drop
             tree.canStartDrag += _ => true;
             tree.setupDragAndDrop += a => Drag(a.selectedIds.SelectMany(id => tree.GetItemDataForId<Node>(id)?.guids ?? new List<string>()));
             tree.dragAndDropUpdate += Accept;
-            tree.handleDrop += a => Drop(a, g => ModuleEdits.Unassign(cfg, g, scan));
+            tree.handleDrop += a => Drop(a, g => ModuleEdits.Unassign(cfg, g, scan, ReadSource));
         }
 
         void RefreshTree()
@@ -407,7 +433,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             })
             {
                 selectionType = SelectionType.Multiple,
-                reorderable = false,
+                reorderable = true, // makes the dragger start drags; handleDrop takes every drop (same module = no-op)
             };
             list.canStartDrag += _ => true;
             list.dragAndDropUpdate += Accept;
@@ -465,7 +491,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 if (m == null || !EditorUtility.DisplayDialog("Delete module",
                         $"Delete {m.name}? Its applied scripts go back to where they were, and its asmdefs are removed, on the next Apply.",
                         "Delete", "Cancel")) return;
-                ModuleEdits.DeleteModule(cfg, m, scan);
+                ModuleEdits.DeleteModule(cfg, m, scan, ReadSource);
                 selected = -1;
                 Validate();
             };
@@ -475,6 +501,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         {
             var m = SelectedModule;
             if (m == null) return;
+            armed = false;
             ModuleEdits.Change(cfg, label, () => change(m));
             if (validate) Validate();
             else RefreshCards();
@@ -568,7 +595,9 @@ namespace Monome.UtilityPack.ModuleOrganizer
             scanBtn.SetEnabled(cfg != null && CanScan);
             validateBtn.SetEnabled(cfg != null && scan != null);
             var blocker = ApplyBlocker();
+            if (blocker != null) armed = false;
             applyBtn.SetEnabled(blocker == null);
+            applyBtn.text = armed ? $"Confirm Apply ({plan.moves.Count} moves, {plan.asmdefs.Count} asmdefs)" : "Apply";
             applyBtn.tooltip = blocker ?? "Move files, write asmdefs and rewrite namespaces as planned.";
             syncBtn.text = $"⚠ {drift.Count} drift → Sync";
             syncBtn.style.display = drift.Count > 0 ? DisplayStyle.Flex : DisplayStyle.None;
@@ -642,6 +671,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             bar.Add(new Button(() => TakeFromDisk(drift.ToList())) { text = "Take all from disk", tooltip = "Update the config to match the files on disk." });
             bar.Add(new Button(Apply) { text = "Re-apply config", tooltip = "Runs Apply: puts the disk back to what the config says." });
             driftView.Add(bar);
+            driftView.Add(Line("Re-apply applies the whole config (there is no per-item re-apply)."));
             foreach (var d in drift)
             {
                 var row = new VisualElement().With("row");
@@ -651,9 +681,12 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
         }
 
+        // Against a fresh snapshot: the disk may have changed since the list was drawn.
         void TakeFromDisk(List<DriftItem> items)
         {
-            ModuleSync.AcceptDisk(cfg, disk, items);
+            disk = DiskSnapshot.Capture(cfg);
+            var wanted = new HashSet<(DriftKind, string, string)>(items.Select(i => (i.kind, i.moduleName, i.guid)));
+            ModuleSync.AcceptDisk(cfg, disk, ModuleSync.Diff(cfg, disk, report).Where(i => wanted.Contains((i.kind, i.moduleName, i.guid))).ToList());
             Validate();
         }
 

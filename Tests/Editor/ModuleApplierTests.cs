@@ -54,6 +54,32 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void TouchedDisk_FalseWhenPreflightFails_TrueOnceWritten()
+        {
+            var guid = Add(T + "/a.txt");
+            var errors = ModuleApplier.Execute(new ApplyPlan
+            {
+                createFolders = { T + "/M" },
+                moves = { new MoveOp { guid = guid, from = T + "/missing.txt", to = T + "/M/a.txt" } },
+            }, cfg, out var touched, refresh: false);
+            CollectionAssert.IsNotEmpty(errors);
+            Assert.IsFalse(touched);
+            Assert.IsFalse(AssetDatabase.IsValidFolder(T + "/M"));
+
+            errors = ModuleApplier.Execute(new ApplyPlan { issues = { new Issue { severity = Severity.Error, message = "x" } } }, cfg, out touched, refresh: false);
+            CollectionAssert.IsNotEmpty(errors);
+            Assert.IsFalse(touched);
+
+            errors = ModuleApplier.Execute(new ApplyPlan
+            {
+                createFolders = { T + "/M" },
+                moves = { new MoveOp { guid = guid, from = T + "/a.txt", to = T + "/M/a.txt" } },
+            }, cfg, out touched, refresh: false);
+            CollectionAssert.IsEmpty(errors);
+            Assert.IsTrue(touched);
+        }
+
+        [Test]
         public void TextEdit_PreservesBomAndCrlf()
         {
             var src = "namespace Old\r\n{\r\n    public class A {}\r\n}\r\n";

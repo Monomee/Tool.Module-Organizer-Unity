@@ -82,6 +82,14 @@ namespace Monome.UtilityPack.ModuleOrganizer
             EditorErrors.Clear();
         }
 
+        // Undo BeginPending when the Apply it announced wrote nothing (no compile will come to resolve it).
+        public static void Cancel()
+        {
+            SessionState.EraseBool(PendingKey);
+            SessionState.EraseString(KeysKey);
+            SessionState.EraseInt(ReloadsKey);
+        }
+
         // ponytail: an Apply that triggers no compile (nothing script-related changed) resolves only at the next reload;
         // detect "no compile requested" after Refresh if that ever shows up in practice.
         static void Check()

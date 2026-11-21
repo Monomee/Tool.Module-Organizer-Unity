@@ -34,20 +34,23 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return n;
         }
 
-        // Entries Apply must move back (applied, or the scan shows the file away from its original folder) go to
-        // pendingRemovals; drafts are just dropped.
-        public static void Unassign(ModuleConfig cfg, IEnumerable<string> guids, ScanResult scan = null)
+        // Entries Apply must restore go to pendingRemovals: applied ones, and drafts whose file (per scan + readSource) is
+        // away from its original folder or no longer in originalNamespace (applied in one module, moved to another in the
+        // UI, then unassigned). Other drafts are just dropped. A draft the user moved by hand counts as away, so Apply
+        // moves it back to originalPath's folder.
+        public static void Unassign(ModuleConfig cfg, IEnumerable<string> guids, ScanResult scan = null, Func<string, string> readSource = null)
         {
             Undo.RecordObject(cfg, "Unassign scripts");
             var set = new HashSet<string>(guids);
-            foreach (var m in cfg.modules) Release(cfg, m, set, scan);
+            foreach (var m in cfg.modules) Release(cfg, m, set, scan, readSource);
             EditorUtility.SetDirty(cfg);
         }
 
-        public static void DeleteModule(ModuleConfig cfg, Module m, ScanResult scan = null)
+        // Entries leave as in Unassign; asmdef GUIDs are retired so Apply deletes them.
+        public static void DeleteModule(ModuleConfig cfg, Module m, ScanResult scan = null, Func<string, string> readSource = null)
         {
             Undo.RecordObject(cfg, "Delete module");
-            Release(cfg, m, new HashSet<string>(m.scripts.Select(e => e.guid)), scan);
+            Release(cfg, m, new HashSet<string>(m.scripts.Select(e => e.guid)), scan, readSource);
             foreach (var g in new[] { m.asmdefGuid, m.editorAsmdefGuid })
                 if (!string.IsNullOrEmpty(g) && !cfg.retiredAsmdefGuids.Contains(g)) cfg.retiredAsmdefGuids.Add(g);
             cfg.modules.Remove(m);
@@ -86,10 +89,10 @@ namespace Monome.UtilityPack.ModuleOrganizer
             EditorUtility.SetDirty(cfg);
         }
 
-        static void Release(ModuleConfig cfg, Module m, HashSet<string> guids, ScanResult scan)
+        static void Release(ModuleConfig cfg, Module m, HashSet<string> guids, ScanResult scan, Func<string, string> readSource)
         {
             foreach (var e in m.scripts.Where(e => guids.Contains(e.guid)))
-                if (e.applied || AwayFromOrigin(e, scan))
+                if (e.applied || ChangedFromOrigin(e, scan, readSource))
                 {
                     cfg.pendingRemovals.RemoveAll(p => p.guid == e.guid);
                     cfg.pendingRemovals.Add(e);
@@ -97,8 +100,13 @@ namespace Monome.UtilityPack.ModuleOrganizer
             m.scripts.RemoveAll(e => guids.Contains(e.guid));
         }
 
-        static bool AwayFromOrigin(ScriptEntry e, ScanResult scan) =>
-            scan != null && scan.files.TryGetValue(e.guid, out var f) && PathRules.RestorePath(e, f.path) != f.path;
+        static bool ChangedFromOrigin(ScriptEntry e, ScanResult scan, Func<string, string> readSource)
+        {
+            if (scan == null || !scan.files.TryGetValue(e.guid, out var f)) return false;
+            if (PathRules.RestorePath(e, f.path) != f.path) return true;
+            var src = readSource?.Invoke(f.path);
+            return src != null && Namespace(src) != (e.originalNamespace ?? "");
+        }
 
         static string Namespace(string src) => src == null ? "" : SourceRewriter.Parse(src).namespaces.FirstOrDefault() ?? "";
     }

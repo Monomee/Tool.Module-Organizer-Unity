@@ -56,10 +56,12 @@ Cleanup:
 
 ## Task 11 — Module Organizer window
 
-Open `TestHost~` in the Unity Editor (no compile errors). Steps 1-7 are also covered headlessly by
-`ModuleOrganizerWindowTests.Scenario_IssuesGateApply_UndoRevertsAssign` (without the mouse); this check is for the real
-drag and drop, layout and dialogs.
+Open `TestHost~` in the Unity Editor (no compile errors). Covered headlessly by `ModuleOrganizerWindowTests`
+(no mouse, no dialogs): the named UI elements, and the logic of steps 2, 5-7 and 10's first click (issues listed, Apply
+gate, Ctrl+Z of an assign re-validates, Apply arms then disarms on re-validate). Manual only: the real drag and drop in
+5-8, the folder picker, layout, dialogs, and the whole Apply / reload / Sync part (steps 10-15).
 
+0. In the repo: `git switch -c tmp/window-check` (throwaway branch; step 15 resets it).
 1. **Tools > Monome > Module Organizer**. Expected: HelpBox "No ModuleConfig yet", toolbar shows **Create ModuleConfig**
    (no config dropdown), Scan disabled.
 2. Click **Create ModuleConfig**. Expected: `Assets/ModuleConfig.asset` is created and selected in the dropdown; the scan
@@ -67,8 +69,8 @@ drag and drop, layout and dialogs.
 3. Click **+** next to *Scope*, pick `Assets/_Fixtures/Scope`. Expected: it is listed; the tree shows
    `Assets/_Fixtures/Scope/` with `Editor/` and the `Fx*.cs` files (`FxAEditor.cs` has an `ed` badge). Picking a folder
    outside `Assets/` shows "Scope folders must be inside Assets/."
-4. Click **+ Module**, select the card, rename it `Alpha` in the panel (Enter). Expected: card title `Alpha`, namespace
-   `Game.NewModule` stays until edited (set it to `Game.Alpha`).
+4. Click **+ Module**, select the card, rename it `Alpha` in the panel (Enter), set Namespace to `Game.Alpha` (Enter).
+   Expected: card title `Alpha`, subtitle `Game.Alpha`.
 5. Drag `FxA.cs` from the tree onto the Alpha card. Expected: FxA leaves the tree and appears in the card with ✗;
    Issues tab lists `✗ [OutOfScopeRef] ... FxOut ...` and `✗ [UnassignedInScopeRef] ... FxB ...` (also FxLambdaOnly);
    Apply is disabled (tooltip "Fix the Error issues first.").
@@ -76,7 +78,26 @@ drag and drop, layout and dialogs.
 7. Drag `FxB.cs` and `FxLambdaOnly.cs` (multi-select, one drag) onto Alpha; add scope `Assets/_Fixtures/Outside`, drag
    `FxOut.cs` onto Alpha. Expected: no Error issues, Plan tab lists the moves into `Assets/_Fixtures/Scope/Alpha`,
    asmdef `Game.Alpha.asmdef` and the namespace edits; **Apply** is enabled.
-8. Drag `FxB.cs` from the Alpha card back onto the tree. Expected: it is unassigned (draft: no "↩" pending styling) and
-   the FxB error is back. Drag the `Scope/` folder node onto Alpha: every unassigned file under it is assigned.
-9. Clean up without applying: Ctrl+Z back to step 2's state, delete `Assets/ModuleConfig.asset`. `git status` in
-   `TestHost~` shows nothing.
+8. Drag `FxB.cs` from the Alpha card back onto the tree. Expected: it is back in the tree in normal text (a draft is just
+   dropped; only an unassigned *applied* file shows in italics with the tooltip "Unassigned: Apply moves it back to where
+   it was.") and the FxB error is back. Drag the `Scope/` folder node onto Alpha: every unassigned file under it is
+   assigned. Ctrl+Z twice, then drag `FxB.cs` onto Alpha again: back to step 7's state.
+9. Drag `FxB.cs` within the Alpha card (onto Alpha itself). Expected: nothing changes.
+10. Click **Apply**. Expected: the Plan tab opens and the button reads `Confirm Apply (N moves, 1 asmdefs)`. Edit the
+    module description (Enter). Expected: the button is back to `Apply`.
+11. Click **Apply**, then **Confirm Apply**. Expected: dialog "The project has uncommitted git changes..." (the new
+    `ModuleConfig.asset` is uncommitted). Click **Cancel**: nothing on disk changes, button back to `Apply`. Click
+    **Apply**, **Confirm Apply**, then **Apply** in the dialog.
+12. Expected: the files move to `Assets/_Fixtures/Scope/Alpha/` with `Game.Alpha.asmdef`. While Unity compiles, the
+    HelpBox reads "Scripts are compiling: Scan is locked..." and Scan is disabled. After the domain reload the Result tab
+    opens with `Editor compile: OK` above `Player compile (<active target>): OK`; the window rescans and the Plan tab
+    reads "Nothing to apply".
+13. Ctrl+Z. Expected: the config does not change (Alpha still holds the four files, Plan still empty): Apply cleared
+    the config's undo history.
+14. In the Project window rename the folder `Assets/_Fixtures/Scope/Alpha` to `AlphaX` (this moves the asmdef; renaming
+    only the `.asmdef` file would keep drifting, since Take from disk reads the asmdef's `name`). Expected: after the
+    reload the toolbar shows `⚠ N drift → Sync`; the Sync tab lists `AsmdefMovedOrRenamed · Alpha` and the note
+    "Re-apply applies the whole config". Click **Take from disk** on that item. Expected: the item is gone and the Alpha
+    module's folder is `Assets/_Fixtures/Scope/AlphaX`.
+15. Cleanup: close the window, then `git reset --hard && git clean -fd TestHost~/Assets && git switch - &&
+    git branch -D tmp/window-check`; let Unity reimport. `git status` shows nothing.

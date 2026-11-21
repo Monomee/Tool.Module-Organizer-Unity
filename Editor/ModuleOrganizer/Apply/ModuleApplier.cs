@@ -17,8 +17,12 @@ namespace Monome.UtilityPack.ModuleOrganizer
         static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true); // throws on bytes that are not UTF-8
         static readonly byte[] Bom = { 0xEF, 0xBB, 0xBF };
 
-        public static List<string> Execute(ApplyPlan plan, ModuleConfig cfg, bool refresh = true)
+        public static List<string> Execute(ApplyPlan plan, ModuleConfig cfg, bool refresh = true) => Execute(plan, cfg, out _, refresh);
+
+        // touchedDisk: false when it stopped before creating a folder or moving/writing a file (plan errors, preflight).
+        public static List<string> Execute(ApplyPlan plan, ModuleConfig cfg, out bool touchedDisk, bool refresh = true)
         {
+            touchedDisk = false;
             var errors = plan.issues.Where(i => i.severity == Severity.Error).Select(i => "Plan error: " + i).ToList();
             if (errors.Count > 0) return errors;
             var texts = Preflight(plan, errors);
@@ -29,13 +33,18 @@ namespace Monome.UtilityPack.ModuleOrganizer
             {
                 if (AssetDatabase.IsValidFolder(f)) continue;
                 var cut = f.LastIndexOf('/');
-                if (cut >= 0 && !string.IsNullOrEmpty(AssetDatabase.CreateFolder(f.Substring(0, cut), f.Substring(cut + 1)))) continue;
+                if (cut >= 0 && !string.IsNullOrEmpty(AssetDatabase.CreateFolder(f.Substring(0, cut), f.Substring(cut + 1))))
+                {
+                    touchedDisk = true;
+                    continue;
+                }
                 errors.Add($"Could not create folder {f}");
                 return errors;
             }
 
             var done = new List<AsmdefOp>();
             var movesOk = true;
+            touchedDisk = true;
             AssetDatabase.StartAssetEditing();
             try
             {
