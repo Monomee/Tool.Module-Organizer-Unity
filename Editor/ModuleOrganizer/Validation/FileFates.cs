@@ -111,13 +111,14 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return moved;
         }
 
-        // Namespaces a moved type leaves that hold no type after Apply: a `using` of them no longer compiles (CS0246).
+        // Namespaces a moved type leaves that hold no type after Apply, directly or in a child namespace: a `using`
+        // of them no longer compiles (CS0246).
         public HashSet<string> GoneNamespaces()
         {
             if (gone != null) return gone;
             var m = MovedTypes();
-            var remaining = new HashSet<string>(scan.types.Values.Select(t =>
-                m.TryGetValue(ModuleValidator.Outer(t.fullName), out var mv) ? mv.newNs : t.ns ?? ""));
+            var remaining = new HashSet<string>(scan.types.Values.SelectMany(t =>
+                ModuleValidator.Prefixes(m.TryGetValue(ModuleValidator.Outer(t.fullName), out var mv) ? mv.newNs : t.ns ?? "")));
             return gone = new HashSet<string>(m.Values.Select(v => v.oldNs).Where(n => n.Length > 0 && !remaining.Contains(n)));
         }
 

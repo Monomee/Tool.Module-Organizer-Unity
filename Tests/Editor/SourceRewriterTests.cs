@@ -104,10 +104,10 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
-        public void RemoveUsing_KeepsStaticAliasAndNested()
+        public void RemoveUsing_KeepsStaticAlias_RemovesNamespaceLevel()
         {
-            var src = "using static Game.Combat;\nusing C = Game.Combat;\nusing Game.Combat; // gone\nnamespace N\n{\n    using Game.Combat;\n}\n";
-            Assert.AreEqual("using static Game.Combat;\nusing C = Game.Combat;\nnamespace N\n{\n    using Game.Combat;\n}\n",
+            var src = "using static Game.Combat;\nusing C = Game.Combat;\nusing Game.Combat; // gone\nnamespace N\n{\n    using Game.Combat;\n    using Game . Combat ; using X;\n    class Y {}\n}\n";
+            Assert.AreEqual("using static Game.Combat;\nusing C = Game.Combat;\nnamespace N\n{\n     using X;\n    class Y {}\n}\n",
                 SourceRewriter.RemoveUsing(src, "Game.Combat"));
             Assert.AreEqual("using A; \nclass X {}\n", SourceRewriter.RemoveUsing("using A; using G;\nclass X {}\n", "G"));
         }
@@ -285,11 +285,15 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             var partial = "using UnityEngine.Scripting.APIUpdating;\n[MovedFrom(true, \"Old\")] partial class P {}\npartial class P {}\n";
             Assert.AreEqual("using UnityEngine.Scripting.APIUpdating;\n" + MF + " partial class P {}\npartial class P {}\n",
                 SourceRewriter.AddMovedFrom(partial, "P", "", "A"));
+            // A qualified name spread over whitespace and comments is replaced whole.
+            var spaced = "[UnityEngine . /* x */ Scripting.APIUpdating\n    .MovedFrom(false, \"Old\")] class P {}\n";
+            Assert.AreEqual(MF + " class P {}\n", SourceRewriter.AddMovedFrom(spaced, "P", "", "A"));
+            Assert.AreEqual(MF + " class P {}\n", SourceRewriter.AddMovedFrom("[global::UnityEngine.Scripting.APIUpdating.MovedFrom(true)] class P {}\n", "P", "", "A"));
         }
 
         [Test]
-        public void FindUsings_PlainTopLevelOnly() =>
-            CollectionAssert.AreEquivalent(new[] { "Game.Combat", "System" },
+        public void FindUsings_PlainDirectives_HeaderAndNamespaceLevel() =>
+            CollectionAssert.AreEquivalent(new[] { "Game.Combat", "System", "Inner" },
                 SourceRewriter.FindUsings("using Game . Combat;\nusing static Foo.Bar;\nusing A = B.C;\n#if X\nusing System;\n#endif\nnamespace N\n{\n    using Inner;\n}\n"));
     }
 }

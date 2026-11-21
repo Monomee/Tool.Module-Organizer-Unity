@@ -301,14 +301,17 @@ namespace Monome.UtilityPack.ModuleOrganizer
             var s = new Src(body);
             var rx = UsingOf(ns);
             var sb = new StringBuilder(body);
-            for (var i = s.top.Count - 1; i >= 0; i--) // backwards so earlier offsets stay valid
+            // File header and the heads of namespace blocks: a plain `using Ns;` is a directive wherever it appears.
+            for (var i = s.lines.Count - 1; i >= 0; i--) // backwards so earlier offsets stay valid
             {
-                if (s.top[i].kind != Kind.Using) continue;
+                var top = i < s.top.Count;
+                if (top && s.top[i].kind != Kind.Using) continue;
                 var line = s.MaskLine(i);
                 var hits = rx.Matches(line);
                 if (hits.Count == 0) continue;
                 var l = s.lines[i];
-                if (rx.Replace(line, "").Trim().Length == 0 && s.top[i].clean && !s.StartsInSpan(i))
+                var clean = top ? s.top[i].clean : l.next > l.end && !s.cov[l.next - 1];
+                if (rx.Replace(line, "").Trim().Length == 0 && clean && !s.StartsInSpan(i))
                     sb.Remove(l.start, l.next - l.start);
                 else
                     for (var k = hits.Count - 1; k >= 0; k--) sb.Remove(l.start + hits[k].Index, hits[k].Length);
@@ -393,8 +396,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 var st = DeclStart(s.mask, d.Index, true);
                 foreach (Match a in MovedFromRx.Matches(s.mask.Substring(st, d.Index - st)))
                 {
-                    var b = st + a.Index;
-                    while (b > 0 && (char.IsLetterOrDigit(s.mask[b - 1]) || s.mask[b - 1] == '_' || s.mask[b - 1] == '.')) b--;
+                    var b = QualifierStart(s.mask, st + a.Index);
                     var e = st + a.Index + a.Length;
                     var q = e;
                     while (q < s.mask.Length && char.IsWhiteSpace(s.mask[q])) q++;
@@ -412,18 +414,32 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return sb.ToString();
         }
 
+        // Start of the qualified name ending at p (`A . B.`, `global::`), whitespace and blanked comments allowed around dots.
+        static int QualifierStart(string mask, int p)
+        {
+            while (true)
+            {
+                var q = p;
+                while (q > 0 && char.IsWhiteSpace(mask[q - 1])) q--;
+                if (q > 0 && mask[q - 1] == '.') q--;
+                else if (q > 1 && mask[q - 1] == ':' && mask[q - 2] == ':') q -= 2;
+                else return p;
+                while (q > 0 && char.IsWhiteSpace(mask[q - 1])) q--;
+                var w = q;
+                while (w > 0 && (char.IsLetterOrDigit(mask[w - 1]) || mask[w - 1] == '_' || mask[w - 1] == '@')) w--;
+                if (w == q) return p;
+                p = w;
+            }
+        }
+
         static readonly Regex PlainUsingRx = new Regex(@"(?<![\w.@])using\s+(?!static\b)(@?\w+(?:\s*\.\s*@?\w+)*)\s*;", RegexOptions.Compiled);
 
-        // Namespaces of the file's top-level `using Ns;` directives (not `using static`, not aliases), #if branches included.
+        // Namespaces of the file's `using Ns;` directives, in the header or at the head of a namespace block (not
+        // `using static`, not aliases), #if branches included. A plain `using A.B;` can only be a directive.
         public static List<string> FindUsings(string src)
         {
-            var s = new Src(NoBom(src ?? ""));
-            var list = new List<string>();
-            for (var i = 0; i < s.top.Count; i++)
-                if (s.top[i].kind == Kind.Using)
-                    foreach (Match m in PlainUsingRx.Matches(s.MaskLine(i)))
-                        list.Add(Regex.Replace(m.Groups[1].Value, @"[@\s]", ""));
-            return list.Distinct().ToList();
+            var mask = new Src(NoBom(src ?? "")).mask;
+            return PlainUsingRx.Matches(mask).Cast<Match>().Select(m => Regex.Replace(m.Groups[1].Value, @"[@\s]", "")).Distinct().ToList();
         }
 
         // Number of type parameters in a `<...>` right after offset i (0 when there is none). Only top-level commas

@@ -362,6 +362,8 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Add(S + "Weapon.cs", "w", "Game.Combat.Weapon");
             Add(S + "Other.cs", "o", "Game.Other");
             disk.sourceByGuid["o"] = "using Game.Combat;\nnamespace Game\n{\n    class Other {}\n}\n"; // unused using
+            Add(S + "Other2.cs", "o2", "Game.Other2");
+            disk.sourceByGuid["o2"] = "namespace Game\n{\n    using Game.Combat;\n    class Other2 {}\n}\n"; // namespace-level
             Assign("Combat", "w");
             Assign("Gear");
             var p = Plan(); // Weapon already in Game.Combat: nothing gone yet
@@ -372,6 +374,8 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             cfg.modules.Single(m => m.name == "Gear").scripts.Add(entry);
             p = Plan();
             CollectionAssert.AreEqual(new[] { "Game.Combat" }, p.edits.Single(e => e.guid == "o").removeUsings);
+            CollectionAssert.AreEqual(new[] { "Game.Combat" }, p.edits.Single(e => e.guid == "o2").removeUsings);
+            Assert.AreEqual("namespace Game\n{\n    class Other2 {}\n}\n", SourceRewriter.RemoveUsing(disk.sourceByGuid["o2"], "Game.Combat"));
 
             Add("Assets/Old/Legacy.cs", "l", "Legacy");
             disk.sourceByGuid["l"] = "using Game.Combat;\nclass Legacy {}\n";
@@ -380,6 +384,24 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.AreEqual(Severity.Error, i.severity);
             Assert.AreEqual("Assets/Old/Legacy.cs", i.path);
             StringAssert.Contains("Game.Combat", i.message);
+        }
+
+        [Test]
+        public void NamespaceSurvivingThroughChild_KeepsUsing()
+        {
+            // The last direct type leaves A, but A.Child.T stays: `using A;` (for Child.T) must survive.
+            Add(S + "Direct.cs", "d", "A.Direct");
+            Add(S + "Child/T.cs", "c", "A.Child.T");
+            Add(S + "U.cs", "u", "U", "A.Child.T");
+            disk.sourceByGuid["u"] = "using A;\nclass U { Child.T t; }\n";
+            Assign("Combat", "d");
+            var p = Plan();
+            Assert.AreEqual("Game.Combat", p.edits.Single(e => e.guid == "d").setNamespace);
+            Assert.IsFalse(p.edits.Any(e => e.guid == "u"), Describe(p));
+
+            Assign("Combat", "c"); // now A is gone entirely
+            p = Plan();
+            CollectionAssert.AreEqual(new[] { "A" }, p.edits.Single(e => e.guid == "u").removeUsings);
         }
 
         [Test]
