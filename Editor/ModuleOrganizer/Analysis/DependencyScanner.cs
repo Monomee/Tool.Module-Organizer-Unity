@@ -39,10 +39,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 }
 
                 // Pass 1: every type declared by a script assembly.
+                var asmdefGuids = new Dictionary<string, string>();
                 foreach (var (a, def) in loaded)
                 {
                     var kind = kinds[a.name];
-                    var asmdefGuid = kind == AssemblyKind.AsmDef
+                    var asmdefGuid = asmdefGuids[a.name] = kind == AssemblyKind.AsmDef
                         ? AssetDatabase.AssetPathToGUID(CompilationPipeline.GetAssemblyDefinitionFilePathFromAssemblyName(a.name))
                         : null;
                     foreach (var t in def.MainModule.GetTypes())
@@ -64,7 +65,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
                     foreach (var src in a.sourceFiles.Select(PathRules.Norm))
                     {
                         if (!File.Exists(src)) continue; // deleted since the last compile
-                        var f = files[src] = new ScriptFile { guid = AssetDatabase.AssetPathToGUID(src), path = src, kind = kinds[a.name] };
+                        var f = files[src] = new ScriptFile
+                        {
+                            guid = AssetDatabase.AssetPathToGUID(src), path = src, kind = kinds[a.name], asmdefGuid = asmdefGuids[a.name],
+                            editorOnlyAssembly = kinds[a.name] == AssemblyKind.AsmDef && a.flags.HasFlag(AssemblyFlags.EditorAssembly),
+                        };
                         result.files[f.guid] = f;
                         // Evaluated with the assembly's defines, so declarations in inactive #if branches add no file.
                         foreach (var name in DeclarationFinder.Find(File.ReadAllText(src), a.defines).Keys)

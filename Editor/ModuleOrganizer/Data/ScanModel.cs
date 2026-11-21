@@ -22,7 +22,9 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public string guid;
         public string path;
         public AssemblyKind kind;
-        public bool IsEditor => kind == AssemblyKind.Editor || kind == AssemblyKind.FirstPassEditor;
+        public string asmdefGuid; // kind == AsmDef only
+        public bool editorOnlyAssembly; // AsmDef compiled only for the Editor (e.g. a module's {ns}.Editor asmdef)
+        public bool IsEditor => kind == AssemblyKind.Editor || kind == AssemblyKind.FirstPassEditor || editorOnlyAssembly;
         public List<string> declaredTypes = new List<string>();
         public HashSet<string> referencedTypes = new HashSet<string>();
     }
