@@ -44,6 +44,9 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public List<ScriptEntry> pendingRemovals = new List<ScriptEntry>();
         // Runtime and Editor asmdef GUIDs of deleted modules; still tool-owned until Apply removes them.
         public List<string> retiredAsmdefGuids = new List<string>();
+        // "oldNs|oldAsm|className" of [MovedFrom]s an Apply wrote whose assets are not re-serialized yet (the compile failed,
+        // or the Editor closed before the reload). ApplyResultWatcher clears them; Apply is blocked while any are owed.
+        public List<string> owedReserializeKeys = new List<string>();
 
         public string EffectiveModulesRoot =>
             !string.IsNullOrEmpty(modulesRoot) ? modulesRoot : (scopeFolders.Count > 0 ? scopeFolders[0] : "Assets");

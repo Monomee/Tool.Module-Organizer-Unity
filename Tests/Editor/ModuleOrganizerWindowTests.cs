@@ -86,6 +86,14 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
                 Undo.PerformUndo();
                 Assert.That(cfg.modules[0].scripts.Select(e => e.guid), Is.EqualTo(new[] { Guid("Scope/FxA.cs") }));
                 Assert.That(apply.enabledSelf, Is.False, "undo re-validates");
+
+                // An earlier Apply's asset migration still owed blocks Apply; Scan (compiled project) settles it.
+                cfg.owedReserializeKeys.Add("Game.Old|Assembly-CSharp|Nothing");
+                var blocker = typeof(ModuleOrganizerWindow).GetMethod("ApplyBlocker", Any);
+                StringAssert.Contains("asset migration", (string)blocker.Invoke(w, null));
+                Call(w, "Scan");
+                Assert.That(cfg.owedReserializeKeys, Is.Empty);
+                Assert.That((string)blocker.Invoke(w, null), Does.Not.Contain("asset migration"));
             }
             finally
             {

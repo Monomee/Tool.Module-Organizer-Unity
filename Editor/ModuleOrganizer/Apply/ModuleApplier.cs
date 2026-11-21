@@ -104,7 +104,14 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
 
             if (refresh) AssetDatabase.Refresh();
+            // Owed until ApplyResultWatcher re-serializes after a good compile, even if this run stopped part way: a later
+            // move of the same types would otherwise lose [SerializeReference] data. Outside Undo, like Record.
+            if (touchedDisk)
+                foreach (var k in plan.reserializeTypeKeys)
+                    if (!cfg.owedReserializeKeys.Contains(k)) cfg.owedReserializeKeys.Add(k);
             if (movesOk) Record(plan, cfg, done, refresh, errors);
+            EditorUtility.SetDirty(cfg);
+            if (EditorUtility.IsPersistent(cfg)) AssetDatabase.SaveAssetIfDirty(cfg);
             return errors;
         }
 
@@ -208,8 +215,6 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 cfg.pendingRemovals.RemoveAll(e => plan.removeEntries.Contains(e.guid));
                 cfg.retiredAsmdefGuids.RemoveAll(plan.clearRetiredAsmdefGuids.Contains);
             }
-            EditorUtility.SetDirty(cfg);
-            if (EditorUtility.IsPersistent(cfg)) AssetDatabase.SaveAssetIfDirty(cfg);
         }
 
         // After Refresh ask the database; without one (tests) the .meta on disk is the truth.

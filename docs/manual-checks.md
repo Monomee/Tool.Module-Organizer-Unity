@@ -5,7 +5,7 @@ Checks that cannot run as EditMode tests (domain reload, interactive Editor). Ru
 ## Task 9 — Apply result after domain reload
 
 `ApplyResultWatcher` keeps the Apply result in `SessionState` across the reload that follows a successful compile.
-Until the Module Organizer window exists, drive it from a throwaway Editor script you delete afterwards.
+These steps drive the watcher directly from a throwaway Editor script you delete afterwards.
 
 Setup:
 
@@ -42,6 +42,10 @@ Compile-error path:
    Expected: no reload; `MONOME_RESULT` with `editorCompileOk: false`, `editorErrors` holding the `error CS1525` line for
    `ProbeBroken.cs`, `playerCompileOk: false`, `playerErrors` empty.
 10. Pending is cleared: delete `ProbeBroken.cs` and let it recompile and reload. Expected: no new `MONOME_RESULT`.
+    After a real Apply that hit compile errors the config still owes its asset migration (`owedReserializeKeys` in the
+    `ModuleConfig` asset, Apply blocked with "pending asset migration"): this reload re-serializes those assets, logs
+    `[Module Organizer] Re-serialized assets an earlier Apply still owed: ...` (when any matched), empties
+    `owedReserializeKeys` and unblocks Apply. The probe's direct `BeginPending` owes nothing, so here nothing is logged.
 
 Player-only error path:
 

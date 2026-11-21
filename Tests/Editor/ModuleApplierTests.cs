@@ -56,6 +56,28 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
         }
 
         [Test]
+        public void ReserializeKeys_AreOwedOnceDiskIsTouched_UntilCleared()
+        {
+            var guid = Add(T + "/a.txt");
+            const string key = "Game.Old|Assembly-CSharp|Payload";
+            var failing = new ApplyPlan { moves = { new MoveOp { guid = guid, from = T + "/missing.txt", to = T + "/b.txt" } }, reserializeTypeKeys = { key } };
+            CollectionAssert.IsNotEmpty(ModuleApplier.Execute(failing, cfg, refresh: false));
+            CollectionAssert.IsEmpty(cfg.owedReserializeKeys, "nothing written, nothing owed");
+
+            for (var i = 0; i < 2; i++)
+            {
+                var to = T + "/a" + i + ".txt";
+                var from = i == 0 ? T + "/a.txt" : T + "/a0.txt";
+                var plan = new ApplyPlan { moves = { new MoveOp { guid = guid, from = from, to = to } }, reserializeTypeKeys = { key } };
+                CollectionAssert.IsEmpty(ModuleApplier.Execute(plan, cfg, refresh: false));
+            }
+            CollectionAssert.AreEqual(new[] { key }, cfg.owedReserializeKeys, "deduplicated");
+
+            ApplyResultWatcher.ClearOwed(new[] { cfg }, new[] { key });
+            CollectionAssert.IsEmpty(cfg.owedReserializeKeys);
+        }
+
+        [Test]
         public void TouchedDisk_FalseWhenPreflightFails_TrueOnceWritten()
         {
             var guid = Add(T + "/a.txt");

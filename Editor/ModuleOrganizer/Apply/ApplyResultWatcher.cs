@@ -58,7 +58,13 @@ namespace Monome.UtilityPack.ModuleOrganizer
             CompilationPipeline.assemblyCompilationFinished += (_, messages) =>
                 EditorErrors.AddRange(messages.Where(m => m.type == CompilerMessageType.Error).Select(m => m.message));
             CompilationPipeline.compilationFinished += _ => { if (Pending) EditorApplication.delayCall += Check; };
-            if (!Pending) return;
+            if (!Pending)
+            {
+                // A reload is a good compile: settle what an earlier Apply still owes (its own compile failed, or the
+                // Editor closed before the reload).
+                EditorApplication.delayCall += ReserializeOwed;
+                return;
+            }
             var reloads = SessionState.GetInt(ReloadsKey, 0) + 1;
             SessionState.SetInt(ReloadsKey, reloads);
             if (reloads > MaxReloads)
@@ -111,7 +117,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
             r.editorCompileOk = true;
             try
             {
-                Guard(() => Reserialize(ParseKeys(SessionState.GetString(KeysKey, "")), r), "Re-serializing assets", r);
+                Guard(() => ReserializeWithOwed(ParseKeys(SessionState.GetString(KeysKey, "")), r), "Re-serializing assets", r);
                 Guard(() => CompilePlayer(r), "Player script compilation", r);
             }
             finally
@@ -137,6 +143,42 @@ namespace Monome.UtilityPack.ModuleOrganizer
             SessionState.EraseString(KeysKey);
             SessionState.EraseInt(ReloadsKey);
             ResultReady?.Invoke();
+        }
+
+        // Owed keys of every ModuleConfig asset plus `keys`; the owed ones are cleared once Reserialize went through.
+        static void ReserializeWithOwed(List<(string ns, string asm, string cls)> keys, ApplyResult r)
+        {
+            var configs = AssetDatabase.FindAssets("t:ModuleConfig").Select(AssetDatabase.GUIDToAssetPath)
+                .Select(AssetDatabase.LoadAssetAtPath<ModuleConfig>).Where(c => c != null).ToList();
+            var owed = configs.SelectMany(c => c.owedReserializeKeys).Distinct().ToList();
+            Reserialize(ParseKeys(string.Join("\n", owed)).Concat(keys).Distinct().ToList(), r);
+            ClearOwed(configs, owed);
+        }
+
+        public static void ClearOwed(IEnumerable<ModuleConfig> configs, ICollection<string> keys)
+        {
+            foreach (var c in configs)
+            {
+                if (c.owedReserializeKeys.RemoveAll(keys.Contains) == 0) continue;
+                EditorUtility.SetDirty(c);
+                if (EditorUtility.IsPersistent(c)) AssetDatabase.SaveAssetIfDirty(c);
+            }
+        }
+
+        // Outside an Apply check (after a reload, on window Scan): only once compiled code is loaded and no Apply is waiting.
+        public static void ReserializeOwed()
+        {
+            if (Pending || EditorApplication.isCompiling || EditorUtility.scriptCompilationFailed) return;
+            var r = new ApplyResult();
+            try { ReserializeWithOwed(new List<(string, string, string)>(), r); }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+                return;
+            }
+            if (r.reserialized.Count > 0)
+                Debug.Log("[Module Organizer] Re-serialized assets an earlier Apply still owed: " + string.Join(", ", r.reserialized));
+            foreach (var w in r.warnings) Debug.LogWarning("[Module Organizer] " + w);
         }
 
         // MovedFrom makes Unity load the old names; re-serializing writes the new ns/asm so the YAML matches before the next move.

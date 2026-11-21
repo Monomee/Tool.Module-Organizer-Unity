@@ -156,6 +156,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 RefreshAll();
                 return;
             }
+            ApplyResultWatcher.ReserializeOwed(); // a compiled project: settle an earlier Apply's asset migration first
             try
             {
                 scan = DependencyScanner.Scan();
@@ -207,6 +208,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         {
             if (cfg == null || scan == null || report == null || plan == null) return "Scan first.";
             if (!CanScan) return "Wait for compilation to finish (and fix compile errors).";
+            if (configs.Any(c => c != null && c.owedReserializeKeys.Count > 0)) return "Pending asset migration — fix compile errors first.";
             if (!report.CanApply) return "Fix the Error issues first.";
             if (plan.issues.Any(i => i.severity == Severity.Error)) return "The plan has errors (see the Plan tab).";
             if (plan.IsEmpty) return "Nothing to apply: the project already matches the config.";
