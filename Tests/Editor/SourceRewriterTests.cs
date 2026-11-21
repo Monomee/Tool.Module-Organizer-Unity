@@ -227,6 +227,25 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.IsFalse(SourceRewriter.TryAddMovedFrom("class Map<TKey, List<TValue>> {}", "Map`3", "", "A", out _));
         }
 
+        // --- fix round 3 regressions ---
+
+        [Test]
+        public void AddMovedFrom_PartialPerConfiguration()
+        {
+            const string P = "partial class P {}\n";
+            var alt = "#if X\n" + P + "#else\n" + P + "#endif\n";
+            var r = SourceRewriter.AddMovedFrom(alt, "P", "", "A");
+            Assert.AreEqual("#if X\n" + MF + "\n" + P + "#else\n" + MF + "\n" + P + "#endif\n", r);
+            Assert.AreEqual(r, SourceRewriter.AddMovedFrom(r, "P", "", "A"));
+
+            Assert.AreEqual(MF + "\n" + P + "#if X\n" + P + "#endif\n",
+                SourceRewriter.AddMovedFrom(P + "#if X\n" + P + "#endif\n", "P", "", "A"));
+
+            var nested = "#if A\n" + P + "#if B\n" + P + "#endif\n#else\n" + P + "#endif\n";
+            Assert.AreEqual("#if A\n" + MF + "\n" + P + "#if B\n" + P + "#endif\n#else\n" + MF + "\n" + P + "#endif\n",
+                SourceRewriter.AddMovedFrom(nested, "P", "", "A"));
+        }
+
         [Test]
         public void FindQualifiedUses_IgnoresCommentsStringsAndNearMisses()
         {

@@ -104,6 +104,28 @@ namespace Monome.UtilityPack.ModuleOrganizer
             public int TopEnd => top.Count < lines.Count ? lines[top.Count].start : text.Length;
             public bool Boundary(int i) => top[i].depth == 0 && top[i].clean;
 
+            // Per line: the enclosing #if groups as (group id, branch index: 0 = #if, then each #elif/#else).
+            public List<(int id, int branch)>[] BranchPaths()
+            {
+                var paths = new List<(int id, int branch)>[lines.Count];
+                var stack = new List<(int id, int branch)>();
+                var nextId = 0;
+                for (var i = 0; i < lines.Count; i++)
+                {
+                    var m = MaskLine(i).TrimStart();
+                    if (m.Length > 0 && m[0] == '#')
+                    {
+                        var dir = DirectiveRx.Match(Line(i)).Groups[1].Value;
+                        var last = stack.Count - 1;
+                        if (dir == "if") stack.Add((nextId++, 0));
+                        else if ((dir == "elif" || dir == "else") && last >= 0) stack[last] = (stack[last].id, stack[last].branch + 1);
+                        else if (dir == "endif" && last >= 0) stack.RemoveAt(last);
+                    }
+                    paths[i] = new List<(int id, int branch)>(stack);
+                }
+                return paths;
+            }
+
             public int LineOf(int offset)
             {
                 var i = 0;
@@ -323,11 +345,21 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 .Cast<Match>().Where(m => Arity(s.mask, m.Index + m.Length) == arity).ToList();
             bool Has(int kw) { var st = DeclStart(s.mask, kw, true); return MovedFromRx.IsMatch(s.mask.Substring(st, kw - st)); }
             bool IsPartial(int kw) { var st = DeclStart(s.mask, kw, false); return PartialRx.IsMatch(s.mask.Substring(st, kw - st)); }
-            // Non-partial declarations are #if alternatives: each gets one. Partial parts are one type: only the first
-            // part gets it (none if any part already has it), else CS0579.
+            // Non-partial declarations are #if alternatives: each gets one. Partial parts are one type, so exactly one
+            // part per preprocessor configuration may carry it (else CS0579): a part is annotated only when it is
+            // mutually exclusive (same #if group, different branch) with every part already carrying it.
+            var paths = s.BranchPaths();
+            bool Exclusive(Match a, Match b) => paths[s.LineOf(a.Index)]
+                .Any(x => paths[s.LineOf(b.Index)].Any(y => y.id == x.id && y.branch != x.branch));
             var partials = decls.Where(m => IsPartial(m.Index)).ToList();
             var targets = decls.Where(m => !partials.Contains(m) && !Has(m.Index)).ToList();
-            if (partials.Count > 0 && !partials.Any(m => Has(m.Index))) targets.Add(partials[0]);
+            var annotated = partials.Where(m => Has(m.Index)).ToList();
+            foreach (var m in partials)
+                if (!Has(m.Index) && annotated.All(a => Exclusive(a, m)))
+                {
+                    annotated.Add(m);
+                    targets.Add(m);
+                }
             targets.Sort((x, y) => x.Index.CompareTo(y.Index));
             var sb = new StringBuilder(body);
             for (var d = targets.Count - 1; d >= 0; d--) // backwards so earlier offsets stay valid
