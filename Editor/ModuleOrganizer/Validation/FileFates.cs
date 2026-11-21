@@ -19,7 +19,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         // First module listing a GUID wins; later listings are duplicates.
         public readonly Dictionary<string, (Module module, ScriptEntry entry)> assigned = new Dictionary<string, (Module, ScriptEntry)>();
         public readonly List<(ScriptEntry entry, Module first, Module second)> duplicates = new List<(ScriptEntry, Module, Module)>();
-        // Pending removals not assigned again: Apply restores them to originalPath / originalNamespace.
+        // Pending removals not assigned again: Apply restores them to PathRules.RestorePath / originalNamespace.
         public readonly Dictionary<string, ScriptEntry> pending = new Dictionary<string, ScriptEntry>();
 
         public FileFates(ModuleConfig cfg, ScanResult scan, Func<ScriptFile, string> source)
@@ -65,8 +65,8 @@ namespace Monome.UtilityPack.ModuleOrganizer
         {
             if (!ModuleValidator.IsAssignable(f, cfg)) return null;
             if (assigned.TryGetValue(f.guid, out var a))
-                return PathRules.TargetPath(a.module, new ScriptEntry { originalPath = Original(f, a.entry), relativeDir = a.entry.relativeDir }, f.IsEditor, cfg.scopeFolders);
-            return pending.TryGetValue(f.guid, out var p) && !string.IsNullOrEmpty(p.originalPath) ? PathRules.Norm(p.originalPath) : null;
+                return PathRules.TargetPath(a.module, new ScriptEntry { originalPath = Original(f, a.entry), relativeDir = a.entry.relativeDir }, f.path, f.IsEditor, cfg.scopeFolders);
+            return pending.TryGetValue(f.guid, out var p) && !string.IsNullOrEmpty(p.originalPath) ? PathRules.RestorePath(p, f.path) : null;
         }
 
         // Assembly after Apply: the module asmdef, Assembly-CSharp(-Editor) for a restored file, else unchanged (null).

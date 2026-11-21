@@ -40,7 +40,7 @@ namespace Monome.UtilityPack.ModuleOrganizer
         public string modulesRoot;
         public List<Module> modules = new List<Module>();
         // Applied entries the user unassigned, or that belonged to a deleted module: Apply restores them to
-        // originalPath / originalNamespace (back in Assembly-CSharp(-Editor)).
+        // originalPath's directory under their current file name / originalNamespace (back in Assembly-CSharp(-Editor)).
         public List<ScriptEntry> pendingRemovals = new List<ScriptEntry>();
         // Runtime and Editor asmdef GUIDs of deleted modules; still tool-owned until Apply removes them.
         public List<string> retiredAsmdefGuids = new List<string>();
@@ -110,14 +110,27 @@ namespace Monome.UtilityPack.ModuleOrganizer
             return string.Join("/", rel.Split('/').Where(s => s.Length > 0 && s != "Editor"));
         }
 
-        public static string TargetPath(Module m, ScriptEntry e, bool isEditor, IReadOnlyList<string> scopeFolders)
+        // The file name always comes from the file's current path: a rename by the user is never undone.
+        // originalPath only decides the directory (via relativeDir) and the restore target.
+        public static string TargetPath(Module m, ScriptEntry e, string currentPath, bool isEditor, IReadOnlyList<string> scopeFolders)
         {
             var parts = new List<string> { Norm(m.folder) };
             if (isEditor) parts.Add("Editor");
             parts.Add(EntryRelativeDir(m, e, scopeFolders));
-            parts.Add(Norm(e.originalPath).Split('/').Last());
+            parts.Add(FileName(currentPath ?? e.originalPath));
             return string.Join("/", parts.Where(s => s.Length > 0));
         }
+
+        // Where an unassigned file goes back to: its original directory, under its current name.
+        public static string RestorePath(ScriptEntry e, string currentPath)
+        {
+            var orig = Norm(e.originalPath);
+            var dir = orig.Contains('/') ? orig.Substring(0, orig.LastIndexOf('/')) : "";
+            var name = FileName(currentPath ?? orig);
+            return dir.Length == 0 ? name : dir + "/" + name;
+        }
+
+        static string FileName(string path) => Norm(path).Split('/').Last();
 
         // Assembly (and asmdef file) name of a module's runtime or Editor asmdef.
         public static string AsmdefName(Module m, bool editor) => m.namespaceName + (editor ? ".Editor" : "");

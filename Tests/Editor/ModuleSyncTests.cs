@@ -184,6 +184,38 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             Assert.That(plan.edits.Single(e => e.guid == "s2").setNamespace, Is.EqualTo("Game.Fight.Sub"));
         }
 
+        [Test]
+        public void FileRenamedInsideModule_NextApplyKeepsNewName()
+        {
+            AcceptNewDamage();
+            disk.scriptPathByGuid["s2"] = F + "/Sub/Blow.cs";
+            disk.scriptPathByGuid["s1"] = F + "/Sword.cs";
+            Assert.That(Diff(), Is.Empty);
+            Assert.That(PlanFromDisk().moves.Where(mv => mv.guid == "s1" || mv.guid == "s2"), Is.Empty);
+        }
+
+        [Test]
+        public void MovedAndRenamedIntoAnotherModule_TargetKeepsNewName()
+        {
+            var bravo = cfg.AddModule("Bravo");
+            bravo.asmdefGuid = "b1";
+            Asmdef("b1", bravo.folder + "/Game.Bravo.asmdef", "Game.Bravo");
+            disk.scriptPathByGuid["s1"] = bravo.folder + "/Sword.cs";
+            AcceptAll();
+            Assert.That(bravo.scripts.Single().originalPath, Is.EqualTo("Assets/_Scripts/Weapon.cs"), "history kept for restore");
+            Assert.That(PlanFromDisk().moves.Where(mv => mv.guid == "s1"), Is.Empty, "stays at Bravo/Sword.cs");
+        }
+
+        [Test]
+        public void UnassignedRenamedFile_RestoresToOriginalDirectoryUnderCurrentName()
+        {
+            disk.scriptPathByGuid["s1"] = F + "/Sword.cs";
+            var e = combat.scripts.Single();
+            combat.scripts.Remove(e);
+            cfg.pendingRemovals.Add(e);
+            Assert.That(PlanFromDisk().moves.Single(mv => mv.guid == "s1").to, Is.EqualTo("Assets/_Scripts/Sword.cs"));
+        }
+
         void AcceptNewDamage()
         {
             disk.scriptPathByGuid["s2"] = F + "/Sub/Damage.cs";
@@ -205,7 +237,7 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
                 state.sourceByGuid[guid] = disk.sourceByGuid[guid];
             }
             File("s1", "Game.Combat.Weapon");
-            File("s2", "Game.Combat.Sub.Damage");
+            if (disk.scriptPathByGuid.ContainsKey("s2")) File("s2", "Game.Combat.Sub.Damage");
             state.pathByGuid["a1"] = F + "/Game.Combat.asmdef";
             var validation = ModuleValidator.Validate(cfg, scan, p => state.sourceByGuid[scan.FileByPath(p).guid]);
             return ApplyPlanner.Build(cfg, scan, validation, state);

@@ -43,8 +43,8 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             var scope = new[] { "Assets/_Scripts" };
             var e = new ScriptEntry { originalPath = "Assets/_Scripts/Weapons/Editor/GunEditor.cs" };
             Assert.AreEqual("Weapons", PathRules.ScopeRelativeDir(e.originalPath, scope));
-            Assert.AreEqual("Assets/_Scripts/Combat/Editor/Weapons/GunEditor.cs", PathRules.TargetPath(m, e, true, scope));
-            Assert.AreEqual("Assets/_Scripts/Combat/Weapons/GunEditor.cs", PathRules.TargetPath(m, e, false, scope));
+            Assert.AreEqual("Assets/_Scripts/Combat/Editor/Weapons/GunEditor.cs", PathRules.TargetPath(m, e, e.originalPath, true, scope));
+            Assert.AreEqual("Assets/_Scripts/Combat/Weapons/GunEditor.cs", PathRules.TargetPath(m, e, e.originalPath, false, scope));
             Assert.AreEqual("Game.Combat.Editor.Weapons", PathRules.TargetNamespace(m, "Weapons", true));
             Assert.AreEqual("Game.Combat", PathRules.TargetNamespace(m, "", false));
         }
@@ -56,10 +56,10 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
             var scope = new[] { "Assets/_Scripts" };
             var e = new ScriptEntry { originalPath = "Assets/_Scripts/Combat/Sub/Damage.cs" };
             Assert.AreEqual("Sub", PathRules.RelativeDir(m, e.originalPath, scope));
-            Assert.AreEqual("Assets/_Scripts/Combat/Sub/Damage.cs", PathRules.TargetPath(m, e, false, scope));
+            Assert.AreEqual("Assets/_Scripts/Combat/Sub/Damage.cs", PathRules.TargetPath(m, e, e.originalPath, false, scope));
             Assert.AreEqual("Game.Combat.Sub", PathRules.TargetNamespace(m, PathRules.RelativeDir(m, e.originalPath, scope), false));
             var ed = new ScriptEntry { originalPath = "Assets/_Scripts/Combat/Editor/Sub/DamageEditor.cs" };
-            Assert.AreEqual("Assets/_Scripts/Combat/Editor/Sub/DamageEditor.cs", PathRules.TargetPath(m, ed, true, scope));
+            Assert.AreEqual("Assets/_Scripts/Combat/Editor/Sub/DamageEditor.cs", PathRules.TargetPath(m, ed, ed.originalPath, true, scope));
             Assert.AreEqual("Weapons", PathRules.RelativeDir(m, "Assets/_Scripts/Weapons/Gun.cs", scope), "outside the module: scope-relative");
         }
 
@@ -74,8 +74,18 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
 
             m.folder = "Assets/_Scripts/Fight";
             m.namespaceName = "Game.Fight";
-            Assert.AreEqual("Assets/_Scripts/Fight/Sub/X.cs", PathRules.TargetPath(m, e, false, scope));
+            Assert.AreEqual("Assets/_Scripts/Fight/Sub/X.cs", PathRules.TargetPath(m, e, e.originalPath, false, scope));
             Assert.AreEqual("Game.Fight.Sub", PathRules.TargetNamespace(m, PathRules.EntryRelativeDir(m, e, scope), false));
+        }
+
+        [Test]
+        public void TargetAndRestorePaths_UseCurrentFileName()
+        {
+            var m = new Module { name = "Combat", namespaceName = "Game.Combat", folder = "Assets/_Scripts/Combat" };
+            var scope = new[] { "Assets/_Scripts" };
+            var e = new ScriptEntry { originalPath = "Assets/_Scripts/Weapons/Weapon.cs" };
+            Assert.AreEqual("Assets/_Scripts/Combat/Weapons/Sword.cs", PathRules.TargetPath(m, e, "Assets/_Scripts/Combat/Weapons/Sword.cs", false, scope));
+            Assert.AreEqual("Assets/_Scripts/Weapons/Sword.cs", PathRules.RestorePath(e, "Assets/_Scripts/Combat/Weapons/Sword.cs"));
         }
     }
 }
