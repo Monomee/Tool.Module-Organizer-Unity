@@ -241,6 +241,8 @@ public static class E2EDriver
         Expect(f, r.playerCompileOk, $"player compile ({r.buildTarget}) failed: " + string.Join(" | ", r.playerErrors));
         Expect(f, r.warnings.Count == 0, "warnings: " + string.Join(" | ", r.warnings));
         Expect(f, r.reserialized.Contains(StorePath), "store asset not re-serialized");
+        var owed = AssetDatabase.LoadAssetAtPath<ModuleConfig>(CfgPath).owedReserializeKeys;
+        Expect(f, owed.Count == 0, "config still owes reserialize keys: " + string.Join(", ", owed));
         var parts = payloadNsAsm.Split('|');
         var yaml = File.ReadAllText(StorePath);
         Expect(f, ApplyResultWatcher.ContainsManagedRefType(yaml, parts[0], parts[1], "E2EPayload"),

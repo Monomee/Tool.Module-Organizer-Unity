@@ -45,8 +45,12 @@ Gói tự kéo theo `com.unity.nuget.mono-cecil` (dùng để đọc các assemb
    Về sau, nếu bạn tự đổi tên/chuyển/thêm file trong thư mục module, tab **Sync** sẽ liệt kê; bấm **Take from disk** để
    cập nhật config theo ổ đĩa, hoặc Apply lại để đưa ổ đĩa về theo config.
 
-Bỏ gán một file đã Apply (kéo nó từ thẻ module về cây) rồi Apply: file về lại đúng thư mục cũ, namespace cũ, và
-trở lại `Assembly-CSharp`. Đổi tên module rồi Apply: thư mục và asmdef được đổi theo.
+Có thể kéo file `.cs` hoặc cả thư mục từ cửa sổ **Project** của Unity thả vào thẻ module (hoặc thả vào cây bên trái để
+bỏ gán); chỉ các file trong scope gán được mới được nhận.
+
+Bỏ gán một file đã Apply (kéo nó từ thẻ module về cây) rồi Apply: file về lại đúng thư mục cũ với namespace cũ, và trở
+lại `Assembly-CSharp(-Editor)`, miễn là thư mục cũ không nằm trong thư mục của một module (nếu có, Apply bị chặn với lỗi
+`RestoreConflict`). Đổi tên module rồi Apply: thư mục và asmdef được đổi theo.
 
 ## An toàn
 
@@ -55,6 +59,11 @@ trở lại `Assembly-CSharp`. Đổi tên module rồi Apply: thư mục và as
   cùng các asset text (`.prefab`, `.unity`, `.asset`...) cần serialize lại sau khi chuyển kiểu `[SerializeReference]`.
 - Ctrl+Z chỉ dùng cho lúc soạn (gán, bỏ gán, đổi tên, xóa module). Sau Apply lịch sử undo của config bị xóa.
 - File `.meta` (GUID) luôn được giữ, nên prefab, scene và asset vẫn trỏ đúng script.
+- Asmdef của module compile **mọi** file `.cs` trong thư mục module. Một file nằm (hoặc sẽ nằm sau Apply) trong thư mục
+  module mà chưa gán vào module đó sẽ chặn Apply với lỗi `CapturedByModule`: gán nó vào module, hoặc chuyển nó ra ngoài.
+- Nếu Apply đã ghi `[MovedFrom]` mà chưa serialize lại được asset (compile lỗi, hoặc Editor bị đóng trước khi reload),
+  tool nhớ việc còn nợ trong config và làm nốt sau lần compile thành công kế tiếp; trong lúc đó nút Apply bị khóa
+  ("pending asset migration").
 - Mọi thứ kiểm tra được đều kiểm trước khi đổi file đầu tiên; nếu một bước giữa chừng lỗi, Apply dừng lại, và lần Apply
   sau sẽ tính kế hoạch từ trạng thái thật trên ổ đĩa.
 
@@ -72,7 +81,18 @@ trở lại `Assembly-CSharp`. Đổi tên module rồi Apply: thư mục và as
 - File có nhiều namespace hoặc namespace lồng nhau không được tự sửa namespace (cảnh báo `MultiNamespace`).
 - `m_TargetAssemblyTypeName` của UnityEvent trong scene/prefab vẫn giữ tên cũ; listener vẫn chạy vì Unity tìm target
   qua fileID, chuỗi này chỉ dùng để hiển thị khi target đã mất.
-- Kéo thả chỉ giữa cây script và các thẻ module (và giữa các thẻ với nhau); không kéo từ cửa sổ Project của Unity.
+- **Asset binary hoặc Mixed: lần chuyển thứ hai làm mất dữ liệu.** Asset binary không được serialize lại, nên vẫn ghi tên
+  cũ của kiểu `[SerializeReference]`; nếu kiểu đó bị chuyển thêm lần nữa, `[MovedFrom]` chỉ trỏ về chỗ ngay trước đó và
+  dữ liệu trong các asset binary đó bị mất. Hãy dùng Force Text, hoặc tự re-save các asset đó giữa hai lần chuyển.
+- **Kiểu partial chỉ nằm trong các nhánh `#if` khác nhau** (ví dụ một phần trong `#if A`, một phần trong `#if B`, không có
+  phần nào ngoài `#if`): `[MovedFrom]` có thể nằm ở nhánh không được compile, và dữ liệu `[SerializeReference]` của kiểu
+  đó có thể mất. Hãy để ít nhất một phần của kiểu nằm ngoài `#if`.
+- **`unsafe` tính theo từng module.** Nếu một file của module có từ khóa `unsafe`, asmdef của module đó (runtime hoặc
+  Editor, theo phía của file) được bật `allowUnsafeCode`.
+- **Kiểu hoặc thành viên `internal`** dùng qua ranh giới module mới sẽ chặn Apply (`InternalAccess`): đổi sang `public`
+  hoặc để hai file chung một module. `InternalsVisibleTo` không được hỗ trợ.
+- **Apply lỗi giữa chừng khi đang chuyển file** có thể để lại một file đã chuyển mà chưa có `[MovedFrom]`. Vì vậy hãy
+  commit trước khi Apply, và khi có lỗi thì quay lại bằng git (`git checkout` / `git clean` trong thư mục bị ảnh hưởng).
 
 ## Kiểm tra
 
