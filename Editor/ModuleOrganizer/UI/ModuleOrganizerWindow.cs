@@ -689,8 +689,11 @@ namespace Monome.UtilityPack.ModuleOrganizer
         {
             disk = DiskSnapshot.Capture(cfg);
             var wanted = new HashSet<(DriftKind, string, string)>(items.Select(i => (i.kind, i.moduleName, i.guid)));
-            ModuleSync.AcceptDisk(cfg, disk, ModuleSync.Diff(cfg, disk, report).Where(i => wanted.Contains((i.kind, i.moduleName, i.guid))).ToList());
+            var refused = ModuleSync.AcceptDisk(cfg, disk, ModuleSync.Diff(cfg, disk, report).Where(i => wanted.Contains((i.kind, i.moduleName, i.guid))).ToList());
             Validate();
+            if (refused.Count == 0) return;
+            error = string.Join("\n", refused);
+            RefreshToolbar();
         }
 
         void RefreshResult()

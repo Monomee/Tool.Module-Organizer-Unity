@@ -137,16 +137,18 @@ namespace Monome.UtilityPack.ModuleOrganizer
             }
         }
 
-        public static void AcceptDisk(ModuleConfig cfg, DiskSnapshot disk, IEnumerable<DriftItem> items)
+        // Returns why items were refused (they stay drift). Items run asmdefs first (they can move module.folder, which
+        // ScriptMovedOut re-checks), then removals, then additions.
+        public static List<string> AcceptDisk(ModuleConfig cfg, DiskSnapshot disk, IEnumerable<DriftItem> items)
         {
             Undo.RecordObject(cfg, "Sync from disk");
-            // Asmdef items first (they can move module.folder, which ScriptMovedOut re-checks), then removals, then
-            // additions: a file moved from module A into B's folder must leave A before B can take it.
-            var released = new Dictionary<string, ScriptEntry>(); // moved out this pass: history for a module taking them in
+            var refused = new List<string>();
+            var blocked = new HashSet<string>(); // modules whose asmdef move was refused: their script rows wait too
+            var roots = cfg.scopeFolders.Append(cfg.EffectiveModulesRoot).Select(PathRules.Norm).ToList();
             foreach (var it in items.OrderBy(Phase))
             {
                 var m = cfg.modules.FirstOrDefault(x => x.name == it.moduleName);
-                if (m == null) continue;
+                if (m == null || (blocked.Contains(m.name) && it.kind != DriftKind.ReferencesDiffer)) continue;
                 var editor = !string.IsNullOrEmpty(it.guid) && it.guid == m.editorAsmdefGuid;
                 switch (it.kind)
                 {
@@ -163,6 +165,13 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         if (!disk.asmdefsByGuid.TryGetValue(it.guid, out var a)) break;
                         var dir = Dir(PathRules.Norm(a.path));
                         if (editor && dir.EndsWith("/Editor", StringComparison.Ordinal)) dir = Dir(dir);
+                        // Apply only writes inside the scope folders and the modules root; a folder elsewhere stays drift.
+                        if (!roots.Any(r => PathRules.IsUnder(dir, r)))
+                        {
+                            refused.Add($"{m.name}: {a.path} is not inside a scope folder or the modules root; move it back or add its folder to the scope.");
+                            blocked.Add(m.name);
+                            break;
+                        }
                         // From the name, not rootNamespace: Diff compares the name to AsmdefName(module).
                         var ns = a.name ?? "";
                         if (editor && ns.EndsWith(".Editor", StringComparison.Ordinal)) ns = ns.Substring(0, ns.Length - ".Editor".Length);
@@ -178,23 +187,15 @@ namespace Monome.UtilityPack.ModuleOrganizer
                         m.scripts.RemoveAll(e => e.guid == it.guid);
                         break;
                     case DriftKind.ScriptMovedOut:
-                        // Just unassigned: the file stays where the user put it, so no pendingRemovals restore.
                         if (!disk.scriptPathByGuid.TryGetValue(it.guid, out var cur) || InModule(m, disk, cur)) break;
-                        foreach (var e in m.scripts.Where(e => e.guid == it.guid)) released[it.guid] = e;
-                        m.scripts.RemoveAll(e => e.guid == it.guid);
+                        // Into another applied module's folder: the same move as that module's Added row, history kept.
+                        var into = cfg.modules.FirstOrDefault(x => x != m && !string.IsNullOrEmpty(x.asmdefGuid) && InModule(x, disk, cur));
+                        if (into != null) Take(into, it.guid, cur);
+                        else m.scripts.RemoveAll(e => e.guid == it.guid); // just unassigned: the file stays, no restore
                         break;
                     case DriftKind.ScriptAddedInModuleFolder:
-                        if (!disk.scriptPathByGuid.TryGetValue(it.guid, out var path) || cfg.FindModuleOf(it.guid) != null) break;
-                        var fileNs = disk.sourceByGuid.TryGetValue(it.guid, out var s) ? SourceRewriter.Parse(s).namespaces.FirstOrDefault() ?? "" : "";
-                        var entry = PathRules.NewEntry(m, it.guid, path, fileNs, cfg.scopeFolders);
-                        if (released.TryGetValue(it.guid, out var prev))
-                        {
-                            // Same file moving A -> B: keep where it came from (restore target), only its place in B is new.
-                            entry.originalPath = prev.originalPath;
-                            entry.originalNamespace = prev.originalNamespace;
-                        }
-                        entry.applied = true;
-                        m.scripts.Add(entry);
+                        if (!disk.scriptPathByGuid.TryGetValue(it.guid, out var path) || cfg.FindModuleOf(it.guid) == m) break;
+                        Take(m, it.guid, path);
                         break;
                     case DriftKind.ReferencesDiffer:
                         // Hand-added references become (editor)ExtraReferences. References missing on disk stay in the
@@ -206,6 +207,24 @@ namespace Monome.UtilityPack.ModuleOrganizer
                 }
             }
             EditorUtility.SetDirty(cfg);
+            return refused;
+
+            // The file at path joins m as applied. Taken from another module (its MovedOut row accepted or not), it keeps
+            // where it came from (restore target); only its place in m is new.
+            void Take(Module to, string g, string at)
+            {
+                var prev = cfg.FindModuleOf(g)?.scripts.First(e => e.guid == g);
+                foreach (var x in cfg.modules) x.scripts.RemoveAll(e => e.guid == g);
+                var fileNs = disk.sourceByGuid.TryGetValue(g, out var src) ? SourceRewriter.Parse(src).namespaces.FirstOrDefault() ?? "" : "";
+                var entry = PathRules.NewEntry(to, g, at, fileNs, cfg.scopeFolders);
+                if (prev != null)
+                {
+                    entry.originalPath = prev.originalPath;
+                    entry.originalNamespace = prev.originalNamespace;
+                }
+                entry.applied = true;
+                to.scripts.Add(entry);
+            }
         }
 
         static int Phase(DriftItem i) => i.kind switch

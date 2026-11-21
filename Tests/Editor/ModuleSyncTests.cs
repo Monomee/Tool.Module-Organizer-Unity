@@ -292,5 +292,38 @@ namespace Monome.UtilityPack.ModuleOrganizer.Tests
 
             Assert.That(Diff(), Is.Empty);
         }
+
+        // 0: Added row alone; 1: Added, then MovedOut; 2: MovedOut, then Added. Each row taken with its own AcceptDisk call.
+        [Test]
+        public void ScriptMovedIntoAnotherModule_RowsTakenOneAtATime_KeepHistory([Values(0, 1, 2)] int order)
+        {
+            var bravo = cfg.AddModule("Bravo");
+            bravo.asmdefGuid = "b1";
+            Asmdef("b1", bravo.folder + "/Game.Bravo.asmdef", "Game.Bravo");
+            disk.scriptPathByGuid["s1"] = bravo.folder + "/Sub/Weapon.cs";
+            var rows = order == 0 ? new[] { DriftKind.ScriptAddedInModuleFolder }
+                : order == 1 ? new[] { DriftKind.ScriptAddedInModuleFolder, DriftKind.ScriptMovedOut }
+                : new[] { DriftKind.ScriptMovedOut, DriftKind.ScriptAddedInModuleFolder };
+            foreach (var k in rows) Assert.That(ModuleSync.AcceptDisk(cfg, disk, Diff().Where(i => i.kind == k).ToList()), Is.Empty);
+
+            Assert.That(combat.scripts, Is.Empty);
+            var e = bravo.scripts.Single();
+            Assert.That((e.guid, e.originalPath, e.originalNamespace, e.relativeDir, e.applied),
+                Is.EqualTo(("s1", "Assets/_Scripts/Weapon.cs", "Legacy", "Sub", true)));
+            Assert.That(Diff(), Is.Empty);
+        }
+
+        [Test]
+        public void AsmdefMovedOutsideScopeAndModulesRoot_IsRefused_AndStaysDrift()
+        {
+            Asmdef("a1", "Assets/Elsewhere/Game.Combat.asmdef", "Game.Combat");
+            disk.scriptPathByGuid["s1"] = "Assets/Elsewhere/Weapon.cs";
+            var refused = ModuleSync.AcceptDisk(cfg, disk, Diff());
+            Assert.That(refused, Has.Count.EqualTo(1));
+            StringAssert.Contains("Assets/Elsewhere/Game.Combat.asmdef", refused[0]);
+            Assert.That(combat.folder, Is.EqualTo(F));
+            Assert.That(combat.scripts.Select(x => x.guid), Is.EqualTo(new[] { "s1" }), "its script rows wait with it");
+            Assert.That(Diff().Select(i => i.kind), Does.Contain(DriftKind.AsmdefMovedOrRenamed));
+        }
     }
 }

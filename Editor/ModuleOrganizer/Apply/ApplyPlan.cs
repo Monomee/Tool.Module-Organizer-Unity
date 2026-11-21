@@ -176,7 +176,20 @@ namespace Monome.UtilityPack.ModuleOrganizer
             plan.removeEntries = cfg.pendingRemovals.Select(e => e.guid).Distinct().ToList();
             plan.reserializeTypeKeys = plan.reserializeTypeKeys.Distinct().ToList();
             plan.deleteFoldersIfEmpty = cleanup.OrderByDescending(d => d.Count(c => c == '/')).ThenBy(d => d, StringComparer.Ordinal).ToList();
+
+            // Defense in depth: nothing is written outside the scope folders and the modules root (Sync can move a module folder).
+            foreach (var mv in plan.moves) Boundary(mv.from, "move from");
+            foreach (var mv in plan.moves) Boundary(mv.to, "move to");
+            foreach (var a in plan.asmdefs) Boundary(a.path, a.delete ? "delete" : "write");
+            foreach (var e in plan.edits) Boundary(CurrentPath(e.guid) ?? scan.files[e.guid].path, "edit");
             return plan;
+
+            void Boundary(string path, string what)
+            {
+                var p = PathRules.Norm(path);
+                if (p.Split('/').All(x => x.Length > 0 && x != "." && x != "..") && roots.Any(r => PathRules.IsUnder(p, r))) return;
+                Error(IssueCode.WriteBoundary, path, $"Refusing to {what} {path}: it is not inside a scope folder or the modules root.");
+            }
 
             void Asmdef(Module m, bool editor, bool want)
             {
