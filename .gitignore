@@ -9,3 +9,4 @@ TestHost~/test.log
 *.csproj
 *.sln
 .vs/
+TestHost~/e2e-*.log

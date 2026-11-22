@@ -1,0 +1,51 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements">
+    <Style src="ModuleOrganizerWindow.uss" />
+    <uie:Toolbar name="toolbar">
+        <ui:DropdownField name="config-picker" />
+        <uie:ToolbarButton name="create-config" text="Create ModuleConfig" />
+        <uie:ToolbarButton name="scan" text="Scan" />
+        <uie:ToolbarButton name="validate" text="Validate" />
+        <uie:ToolbarButton name="apply" text="Apply" />
+        <ui:VisualElement class="spacer" />
+        <uie:ToolbarButton name="sync" />
+    </uie:Toolbar>
+    <ui:HelpBox name="status" message-type="Warning" />
+    <ui:TwoPaneSplitView name="vsplit" orientation="Vertical" fixed-pane-index="1" fixed-pane-initial-dimension="220">
+        <ui:TwoPaneSplitView name="hsplit" orientation="Horizontal" fixed-pane-index="0" fixed-pane-initial-dimension="260">
+            <ui:VisualElement name="left" class="pane">
+                <ui:VisualElement class="row">
+                    <ui:Label text="Scope" class="header grow" />
+                    <ui:Button name="add-scope" text="+" tooltip="Add a scope folder (inside Assets/)" />
+                </ui:VisualElement>
+                <ui:VisualElement name="scope-list" />
+                <uie:ToolbarSearchField name="filter" />
+                <ui:Label name="unassigned-header" class="header" />
+                <ui:TreeView name="unassigned" class="grow" selection-type="Multiple" fixed-item-height="18" />
+            </ui:VisualElement>
+            <ui:VisualElement name="middle" class="row grow">
+                <ui:ScrollView name="modules" class="grow">
+                    <ui:VisualElement name="cards" />
+                    <ui:Button name="add-module" text="+ Module" />
+                </ui:ScrollView>
+                <ui:ScrollView name="module-panel" class="pane">
+                    <ui:Label text="Module" class="header" />
+                    <ui:TextField name="m-name" label="Name" is-delayed="true" />
+                    <ui:TextField name="m-namespace" label="Namespace" is-delayed="true" />
+                    <uie:ColorField name="m-color" label="Color" />
+                    <ui:TextField name="m-description" label="Description" multiline="true" is-delayed="true" />
+                    <ui:Toggle name="m-rewrite" label="Rewrite namespace" />
+                    <ui:TextField name="m-extra-refs" label="Extra refs" multiline="true" is-delayed="true" tooltip="One asmdef per line (GUID:... or assembly name); runtime and Editor asmdefs" />
+                    <ui:TextField name="m-editor-refs" label="Editor refs" multiline="true" is-delayed="true" tooltip="One asmdef per line; Editor asmdef only" />
+                    <ui:Button name="m-delete" text="Delete module" />
+                </ui:ScrollView>
+            </ui:VisualElement>
+        </ui:TwoPaneSplitView>
+        <ui:TabView name="tabs">
+            <ui:Tab name="tab-issues" label="Issues"><ui:ScrollView name="issues" /></ui:Tab>
+            <ui:Tab name="tab-deps" label="Dependencies"><ui:ScrollView name="deps" /></ui:Tab>
+            <ui:Tab name="tab-plan" label="Plan"><ui:ScrollView name="plan" /></ui:Tab>
+            <ui:Tab name="tab-sync" label="Sync"><ui:ScrollView name="drift" /></ui:Tab>
+            <ui:Tab name="tab-result" label="Result"><ui:ScrollView name="result" /></ui:Tab>
+        </ui:TabView>
+    </ui:TwoPaneSplitView>
+</ui:UXML>
